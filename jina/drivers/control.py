@@ -165,15 +165,11 @@ class ReduceDriver(RouteDriver):
 
 
 class ReloadControlReqDriver(BaseExecutableDriver):
-
     def __init__(
-            self,
-            executor: Optional[str] = None,
-            method: str = 'reload',
-            *args,
-            **kwargs,
+        self,
+        executor: Optional[str] = None,
+        method: str = 'reload',
+        *args,
+        **kwargs,
     ):
-        super().__init__(
-            executor, method, *args, **kwargs
-        )
-
+        super().__init__(executor, method, *args, **kwargs)
