@@ -2,6 +2,7 @@ __copyright__ = "Copyright (c) 2020 Jina AI Limited. All rights reserved."
 __license__ = "Apache-2.0"
 
 import time
+from typing import Optional, Tuple
 
 from google.protobuf.json_format import MessageToJson
 
@@ -161,3 +162,17 @@ class ForwardDriver(RouteDriver):
 
 class ReduceDriver(RouteDriver):
     """Alias to :class:`RouteDriver`"""
+
+
+class ReloadControlReqDriver(ControlReqDriver):
+
+    def __init__(
+            self,
+            executor: Optional[str] = None,
+            method: str = 'reload',
+            *args,
+            **kwargs,
+    ):
+        super().__init__(
+            executor, method, *args, **kwargs
+        )
