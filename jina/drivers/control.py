@@ -1,7 +1,10 @@
 __copyright__ = "Copyright (c) 2020 Jina AI Limited. All rights reserved."
 __license__ = "Apache-2.0"
 
+import asyncio
+import threading
 import time
+from threading import Thread
 from typing import Optional, Tuple
 
 from google.protobuf.json_format import MessageToJson
@@ -175,4 +178,6 @@ class ReloadControlReqDriver(BaseExecutableDriver):
         super().__init__(executor, method, *args, **kwargs)
 
     def __call__(self, *args, **kwargs):
-        self.exec_fn(self.req.path)
+        fn = getattr(self.exec, 'reload_compound')
+        self.x = threading.Thread(target=fn, args=(self.req.path,))
+        self.x.start()
