@@ -173,3 +173,6 @@ class ReloadControlReqDriver(BaseExecutableDriver):
         **kwargs,
     ):
         super().__init__(executor, method, *args, **kwargs)
+
+    def __call__(self, *args, **kwargs):
+        self.exec_fn(self.req.path)
