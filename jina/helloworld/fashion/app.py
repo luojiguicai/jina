@@ -2,7 +2,6 @@ import os
 from pathlib import Path
 
 from jina import Flow
-from jina.helper import countdown
 from jina.parsers.helloworld import set_hw_parser
 
 if __name__ == '__main__':
@@ -12,9 +11,8 @@ if __name__ == '__main__':
         download_data,
         index_generator,
         query_generator,
-        colored,
     )
-    from executors import MyEncoder, MyIndexer, MyEvaluator
+    from my_executors import MyEncoder, MyIndexer, MyEvaluator
 else:
     from .helper import (
         print_result,
@@ -22,9 +20,8 @@ else:
         download_data,
         index_generator,
         query_generator,
-        colored,
     )
-    from .executors import MyEncoder, MyIndexer, MyEvaluator
+    from .my_executors import MyEncoder, MyIndexer, MyEvaluator
 
 cur_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -72,38 +69,21 @@ def hello_world(args):
 
     # reduce the network load by using `fp16`, or even `uint8`
     os.environ['JINA_ARRAY_QUANT'] = 'fp16'
-    os.environ['HW_WORKDIR'] = args.workdir
-
     # now comes the real work
     # load index flow from a YAML file
-    f = Flow().add(uses=MyEncoder, parallel=2).add(uses=MyIndexer).add(uses=MyEvaluator)
+    f = (
+        Flow()
+        .add(uses=MyEncoder, parallel=2)
+        .add(uses=MyIndexer, workspace=args.workdir)
+        .add(uses=MyEvaluator)
+    )
 
     # run it!
     with f:
         f.index(
             index_generator(num_docs=targets['index']['data'].shape[0], target=targets),
-            request_size=args.request_size,
+            show_progress=True,
         )
-
-        # wait for couple of seconds
-        countdown(
-            3,
-            reason=colored(
-                'behold! im going to switch to query mode',
-                'cyan',
-                attrs=['underline', 'bold', 'reverse'],
-            ),
-        )
-
-        # f.search(
-        #     query_generator(
-        #         num_docs=args.num_query, target=targets, with_groundtruth=True
-        #     ),
-        #     shuffle=True,
-        #     on_done=print_result,
-        #     request_size=args.request_size,
-        #     parameters={'top_k': args.top_k},
-        # )
 
         f.post(
             '/eval',
@@ -112,8 +92,8 @@ def hello_world(args):
             ),
             shuffle=True,
             on_done=print_result,
-            request_size=args.request_size,
             parameters={'top_k': args.top_k},
+            show_progress=True,
         )
 
         # write result to html

@@ -1,18 +1,26 @@
+import os
 import sys
 
 
 def _get_run_args(print_args: bool = True):
-    from jina.logging import default_logger
     from jina.parsers import get_main_parser
-    from jina.helper import colored
+
+    silent_print = {'help', 'hub'}
 
     parser = get_main_parser()
     if len(sys.argv) > 1:
         from argparse import _StoreAction, _StoreTrueAction
 
-        args = parser.parse_args()
-        if print_args:
-            from pkg_resources import resource_filename
+        args, unknown = parser.parse_known_args()
+
+        if unknown:
+            from jina.helper import warn_unknown_args
+
+            warn_unknown_args(unknown)
+
+        if args.cli not in silent_print and print_args:
+            from jina.helper import colored
+            from jina import __resources_path__
 
             p = parser._actions[-1].choices[sys.argv[1]]
             default_args = {
@@ -21,9 +29,7 @@ def _get_run_args(print_args: bool = True):
                 if isinstance(a, (_StoreAction, _StoreTrueAction))
             }
 
-            with open(
-                resource_filename('jina', '/'.join(('resources', 'jina.logo')))
-            ) as fp:
+            with open(os.path.join(__resources_path__, 'jina.logo')) as fp:
                 logo_str = fp.read()
             param_str = []
             for k, v in sorted(vars(args).items()):
@@ -33,9 +39,7 @@ def _get_run_args(print_args: bool = True):
                 else:
                     param_str.append('🔧️ ' + colored(j, 'blue', 'on_yellow'))
             param_str = '\n'.join(param_str)
-            default_logger.info(
-                f'\n{logo_str}\n▶️  {" ".join(sys.argv)}\n{param_str}\n'
-            )
+            print(f'\n{logo_str}\n▶️  {" ".join(sys.argv)}\n{param_str}\n')
         return args
     else:
         parser.print_help()
@@ -67,22 +71,25 @@ def _is_latest_version(suppress_on_error=True):
     try:
         from urllib.request import Request, urlopen
         import json
-        from pkg_resources import parse_version
         from jina import __version__
-        from jina.logging import default_logger
+        import warnings
 
         req = Request(
             'https://api.jina.ai/latest', headers={'User-Agent': 'Mozilla/5.0'}
         )
         with urlopen(
-            req, timeout=1
-        ) as resource:  # 'with' is important to close the resource after use
-            latest_ver = json.load(resource)['version']
-            latest_ver = parse_version(latest_ver)
-            cur_ver = parse_version(__version__)
+            req, timeout=5
+        ) as resp:  # 'with' is important to close the resource after use
+            latest_ver = json.load(resp)['version']
+            from distutils.version import LooseVersion
+
+            latest_ver = LooseVersion(latest_ver)
+            cur_ver = LooseVersion(__version__)
             if cur_ver < latest_ver:
+                from jina.logging.predefined import default_logger
+
                 default_logger.warning(
-                    f'WARNING: You are using Jina version {cur_ver}, however version {latest_ver} is available. '
+                    f'You are using Jina version {cur_ver}, however version {latest_ver} is available. '
                     f'You should consider upgrading via the "pip install --upgrade jina" command.'
                 )
                 return False
@@ -96,8 +103,14 @@ def _is_latest_version(suppress_on_error=True):
 def main():
     """The main entrypoint of the CLI """
     _quick_ac_lookup()
+
     from . import api
 
     args = _get_run_args()
-    _is_latest_version()
+
+    # checking version info in another thread
+    import threading
+
+    threading.Thread(target=_is_latest_version, daemon=True).start()
+
     getattr(api, args.cli.replace('-', '_'))(args)

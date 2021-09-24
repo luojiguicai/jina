@@ -5,25 +5,32 @@ import pytest
 import requests
 
 from jina import Executor, DocumentArray, requests as req
+from jina import Flow
 from jina import helper, Document
-from jina.clients import Client, WebSocketClient
+from jina.clients import Client
 from jina.excepts import BadClientInput
-from jina.flow import Flow
-from jina.parsers import set_gateway_parser, set_client_cli_parser
+from jina.parsers import set_gateway_parser
 from jina.peapods import Pea
 from jina.proto.jina_pb2 import DocumentProto
+from jina.types.document.generators import from_csv, from_ndjson, from_files
+from tests import random_docs
 
 cur_dir = os.path.dirname(os.path.abspath(__file__))
 
 
 @pytest.fixture(scope='function')
 def flow():
-    return Flow(rest_api=False).add()
+    return Flow(protocol='grpc').add()
 
 
 @pytest.fixture(scope='function')
-def flow_with_rest_api_enabled():
-    return Flow(rest_api=True).add()
+def flow_with_websocket():
+    return Flow(protocol='websocket').add()
+
+
+@pytest.fixture(scope='function')
+def flow_with_http():
+    return Flow(protocol='http').add()
 
 
 @pytest.fixture(scope='function')
@@ -40,15 +47,17 @@ def test_img_2():
     'inputs', [iter([b'1234', b'45467']), iter([DocumentProto(), DocumentProto()])]
 )
 def test_check_input_success(inputs):
-    Client.check_input(inputs)
+    client = Client(host='localhost', port_jinad=12345)
+    client.check_input(inputs)
 
 
 @pytest.mark.parametrize(
     'inputs', [iter([list(), list(), [12, 2, 3]]), iter([set(), set()])]
 )
 def test_check_input_fail(inputs):
+    client = Client(host='localhost', port_jinad=12345)
     with pytest.raises(BadClientInput):
-        Client.check_input(inputs)
+        client.check_input(inputs)
 
 
 @pytest.mark.parametrize(
@@ -57,89 +66,89 @@ def test_check_input_fail(inputs):
 )
 def test_gateway_ready(port_expose, route, status_code):
     p = set_gateway_parser().parse_args(
-        ['--port-expose', str(port_expose), '--runtime-cls', 'RESTRuntime']
+        ['--port-expose', str(port_expose), '--protocol', 'http']
     )
     with Pea(p):
         time.sleep(0.5)
-        a = requests.get(f'http://0.0.0.0:{p.port_expose}{route}')
+        a = requests.get(f'http://localhost:{p.port_expose}{route}')
         assert a.status_code == status_code
 
 
-def test_gateway_index(flow_with_rest_api_enabled, test_img_1, test_img_2):
-    with flow_with_rest_api_enabled:
+def test_gateway_index(flow_with_http, test_img_1, test_img_2):
+    with flow_with_http:
         time.sleep(0.5)
         r = requests.post(
-            f'http://0.0.0.0:{flow_with_rest_api_enabled.port_expose}/index',
+            f'http://localhost:{flow_with_http.port_expose}/index',
             json={'data': [test_img_1, test_img_2]},
         )
+
         assert r.status_code == 200
         resp = r.json()
         assert 'data' in resp
         assert len(resp['data']['docs']) == 2
-        assert resp['data']['docs'][0]['uri'] == test_img_1
+        assert resp['data']['docs'][0]['text'] == test_img_1
 
 
-@pytest.mark.parametrize('restful', [False, True])
-def test_mime_type(restful):
+@pytest.mark.slow
+@pytest.mark.parametrize('protocol', ['websocket', 'grpc', 'http'])
+def test_mime_type(protocol):
     class MyExec(Executor):
         @req
         def foo(self, docs: 'DocumentArray', **kwargs):
             for d in docs:
                 d.convert_uri_to_buffer()
 
-    f = Flow(restful=restful).add(uses=MyExec)
+    f = Flow(protocol=protocol).add(uses=MyExec)
 
     def validate_mime_type(req):
         for d in req.data.docs:
             assert d.mime_type == 'text/x-python'
 
     with f:
-        f.index(DocumentArray.from_files('*.py'), validate_mime_type)
+        f.index(from_files('*.py'), validate_mime_type)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('func_name', ['index', 'search'])
-@pytest.mark.parametrize('restful', [False, True])
-def test_client_ndjson(restful, mocker, func_name):
-    with Flow(restful=restful).add() as f, open(
+@pytest.mark.parametrize('protocol', ['websocket', 'grpc', 'http'])
+def test_client_ndjson(protocol, mocker, func_name):
+    with Flow(protocol=protocol).add() as f, open(
         os.path.join(cur_dir, 'docs.jsonlines')
     ) as fp:
         mock = mocker.Mock()
-        getattr(f, f'{func_name}')(DocumentArray.from_ndjson(fp), on_done=mock)
+        getattr(f, f'{func_name}')(from_ndjson(fp), on_done=mock)
         mock.assert_called_once()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('func_name', ['index', 'search'])
-@pytest.mark.parametrize('restful', [False, True])
-def test_client_csv(restful, mocker, func_name):
-    with Flow(restful=restful).add() as f, open(
+@pytest.mark.parametrize('protocol', ['websocket', 'grpc', 'http'])
+def test_client_csv(protocol, mocker, func_name):
+    with Flow(protocol=protocol).add() as f, open(
         os.path.join(cur_dir, 'docs.csv')
     ) as fp:
         mock = mocker.Mock()
-        getattr(f, f'{func_name}')(DocumentArray.from_csv(fp), on_done=mock)
+        getattr(f, f'{func_name}')(from_csv(fp), on_done=mock)
         mock.assert_called_once()
 
 
 # Timeout is necessary to fail in case of hanging client requests
-@pytest.mark.timeout(5)
-def test_client_websocket(mocker, flow_with_rest_api_enabled):
-    with flow_with_rest_api_enabled:
+@pytest.mark.timeout(60)
+def test_client_websocket(mocker, flow_with_websocket):
+    with flow_with_websocket:
         time.sleep(0.5)
-        client = WebSocketClient(
-            set_client_cli_parser().parse_args(
-                [
-                    '--host',
-                    'localhost',
-                    '--port-expose',
-                    str(flow_with_rest_api_enabled.port_expose),
-                ]
-            )
+        client = Client(
+            host='localhost',
+            port=str(flow_with_websocket.port_expose),
+            protocol='websocket',
         )
         # Test that a regular index request triggers the correct callbacks
         on_always_mock = mocker.Mock()
         on_error_mock = mocker.Mock()
         on_done_mock = mocker.Mock()
-        client.index(
-            iter([Document()]),
+        client.post(
+            '',
+            random_docs(1),
             request_size=1,
             on_always=on_always_mock,
             on_error=on_error_mock,
@@ -149,24 +158,44 @@ def test_client_websocket(mocker, flow_with_rest_api_enabled):
         on_done_mock.assert_called_once()
         on_error_mock.assert_not_called()
 
-        # Test that an empty index request does not trigger any callback and does not time out
-        mock = mocker.Mock()
-        client.index(
-            iter([()]), request_size=1, on_always=mock, on_error=mock, on_done=mock
-        )
-        mock.assert_not_called()
+
+@pytest.mark.parametrize('protocol', ['websocket', 'grpc', 'http'])
+def test_client_from_kwargs(protocol):
+    Client(port=12345, host='0.0.0.1', protocol=protocol)
 
 
-@pytest.mark.parametrize('client_cls', [Client, WebSocketClient])
-def test_client_from_kwargs(client_cls):
-    client_cls(port_expose=12345, host='0.0.0.1')
-
-
-def test_independent_client():
-    with Flow() as f:
-        c = Client(port_expose=f.port_expose)
+@pytest.mark.parametrize('protocol', ['websocket', 'grpc', 'http'])
+def test_independent_client(protocol):
+    with Flow(protocol=protocol) as f:
+        c = Client(host='localhost', port=f.port_expose, protocol=protocol)
+        assert type(c) == type(f.client)
         c.post('/')
 
-    with Flow(restful=True) as f:
-        c = WebSocketClient(port_expose=f.port_expose)
-        c.post('/')
+
+@pytest.mark.slow
+@pytest.mark.parametrize('protocol', ['http', 'grpc', 'websocket'])
+def test_all_sync_clients(protocol, mocker):
+    from jina import requests
+
+    class MyExec(Executor):
+        @requests
+        def foo(self, docs, **kwargs):
+            pass
+
+    f = Flow(protocol=protocol).add(uses=MyExec)
+    docs = list(random_docs(1000))
+    m1 = mocker.Mock()
+    m2 = mocker.Mock()
+    m3 = mocker.Mock()
+    m4 = mocker.Mock()
+    with f:
+        c = Client(host='localhost', port=f.port_expose, protocol=protocol)
+        c.post('/', on_done=m1)
+        c.post('/foo', docs, on_done=m2)
+        c.post('/foo', on_done=m3)
+        c.post('/foo', docs, parameters={'hello': 'world'}, on_done=m4)
+
+    m1.assert_called_once()
+    m2.assert_called()
+    m3.assert_called_once()
+    m4.assert_called()

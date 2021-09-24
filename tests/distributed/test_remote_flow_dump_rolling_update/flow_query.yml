@@ -1,10 +1,10 @@
 jtype: Flow
 version: '1'
 with:
-  read_only: false
-  rest_api: true
+  protocol: http
   port_expose: 9001
-pods:
+  cors: true
+executors:
   - name: indexer_query
     uses: indexer_query.yml
     replicas: 2

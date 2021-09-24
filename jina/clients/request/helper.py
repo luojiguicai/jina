@@ -1,9 +1,9 @@
 """Module for helper functions for clients."""
 from typing import Tuple
 
-from ... import Document
 from ...enums import DataInputType
 from ...excepts import BadDocType, BadRequestType
+from ...types.document import Document
 from ...types.request import Request
 
 
@@ -25,7 +25,7 @@ def _new_data_request_from_batch(
 
 def _new_data_request(endpoint, target, parameters):
     req = Request()
-    req.request_type = 'data'
+    req = req.as_typed_request('data')
 
     # set up header
     if endpoint:
@@ -42,9 +42,7 @@ def _new_doc_from_data(
     data, data_type: DataInputType, **kwargs
 ) -> Tuple['Document', 'DataInputType']:
     def _build_doc_from_content():
-        with Document(**kwargs) as d:
-            d.content = data
-        return d, DataInputType.CONTENT
+        return Document(content=data, **kwargs), DataInputType.CONTENT
 
     if data_type == DataInputType.AUTO or data_type == DataInputType.DOCUMENT:
         if isinstance(data, Document):

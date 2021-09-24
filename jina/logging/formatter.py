@@ -1,26 +1,31 @@
 import json
+import logging
 import re
 from copy import copy
-from logging import Formatter
+from logging import Formatter, LogRecord
 
-from .profile import used_memory
+from ..enums import LogVerbosity
 from ..helper import colored
-
-if False:
-    from logging import LogRecord
 
 
 class ColorFormatter(Formatter):
     """Format the log into colored logs based on the log-level."""
 
     MAPPING = {
-        'DEBUG': dict(color='white', on_color=None),  # white
-        'INFO': dict(color='white', on_color=None),  # cyan
-        'WARNING': dict(color='yellow', on_color='on_grey'),  # yellow
-        'ERROR': dict(color='red', on_color=None),  # 31 for red
-        'CRITICAL': dict(color='white', on_color='on_red'),  # white on red bg
-        'SUCCESS': dict(color='green', on_color=None),  # white on red bg
+        LogVerbosity.DEBUG: dict(color='magenta'),
+        LogVerbosity.INFO: dict(),  # plain
+        LogVerbosity.SUCCESS: dict(color='green'),
+        LogVerbosity.WARNING: dict(color='yellow'),
+        LogVerbosity.ERROR: dict(color='red'),
+        LogVerbosity.CRITICAL: dict(color='red', attrs=['bold']),
     }  #: log-level to color mapping
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.formatters = {
+            k: logging.Formatter(colored(self._fmt, **v))
+            for k, v in self.MAPPING.items()
+        }
 
     def format(self, record):
         """
@@ -29,11 +34,8 @@ class ColorFormatter(Formatter):
         :param record: A LogRecord object
         :return:: Formatted LogRecord with level-colour MAPPING to add corresponding colour.
         """
-        cr = copy(record)
-        if cr.levelname != 'INFO':
-            seq = self.MAPPING.get(cr.levelname, self.MAPPING['INFO'])  # default white
-            cr.msg = colored(cr.msg, **seq)
-        return super().format(cr)
+        formatter = self.formatters.get(record.levelno)
+        return formatter.format(record)
 
 
 class PlainFormatter(Formatter):
@@ -96,6 +98,8 @@ class ProfileFormatter(Formatter):
         :param record: A LogRecord object.
         :return:: Return JSON formatted log if msg of LogRecord is dict type else return empty.
         """
+        from .profile import used_memory
+
         cr = copy(record)
         if isinstance(cr.msg, dict):
             cr.msg.update(

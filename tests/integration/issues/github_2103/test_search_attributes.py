@@ -5,7 +5,8 @@ import time
 import pytest
 from urllib import request
 
-from jina.flow import Flow
+from jina import Flow
+from jina.peapods.runtimes.gateway.http.models import _to_camel_case
 from jina.proto import jina_pb2
 from jina import Document
 from jina import helper
@@ -14,10 +15,15 @@ from tests import validate_callback
 
 cur_dir = os.path.dirname(os.path.abspath(__file__))
 
-_document_fields = sorted(set(list(jina_pb2.DocumentProto().DESCRIPTOR.fields_by_name)))
+_document_fields = sorted(
+    set(
+        _to_camel_case(k)
+        for k in list(jina_pb2.DocumentProto().DESCRIPTOR.fields_by_name)
+    )
+)
 
 # check if this can be bypassed
-IGNORED_FIELDS = ['embedding', 'score']
+IGNORED_FIELDS = ['embedding', 'scores', 'graphInfo', 'evaluations']
 
 
 @pytest.fixture
@@ -50,20 +56,29 @@ class MockExecutor(Executor):
 
 def test_no_matches_rest(query_dict):
     port = helper.random_port()
-    with Flow(rest_api=True, port_expose=port, including_default_value_fields=True).add(
-        uses=MockExecutor
-    ):
+    with Flow(
+        protocol='http',
+        port_expose=port,
+        including_default_value_fields=True,
+    ).add(uses=MockExecutor):
         # temporarily adding sleep
         time.sleep(0.5)
         query = json.dumps(query_dict).encode('utf-8')
         req = request.Request(
-            f'http://0.0.0.0:{port}/search',
+            f'http://localhost:{port}/search',
             data=query,
             headers={'content-type': 'application/json'},
         )
         resp = request.urlopen(req).read().decode('utf8')
         doc = json.loads(resp)['data']['docs'][0]
         present_keys = sorted(doc.keys())
+
         for field in _document_fields:
-            if field not in IGNORED_FIELDS + ['buffer', 'content', 'blob', 'uri']:
+            if field not in IGNORED_FIELDS + [
+                'buffer',
+                'content',
+                'blob',
+                'uri',
+                'graph',
+            ]:
                 assert field in present_keys

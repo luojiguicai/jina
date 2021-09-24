@@ -9,7 +9,7 @@ import numpy as np
 
 from jina import Document
 from jina.helper import colored
-from jina.logging import default_logger
+from jina.logging.predefined import default_logger
 from jina.logging.profile import ProgressBar
 
 result_html = []
@@ -52,7 +52,11 @@ def index_generator(num_docs: int, target: dict):
     :yields: index data
     """
     for internal_doc_id in range(num_docs):
-        d = Document(content=target['index']['data'][internal_doc_id])
+        # x_blackwhite.shape is (28,28)
+        x_blackwhite = 255 - target['index']['data'][internal_doc_id]
+        # x_color.shape is (28,28,3)
+        x_color = np.stack((x_blackwhite,) * 3, axis=-1)
+        d = Document(content=x_color)
         d.tags['id'] = internal_doc_id
         yield d
 
@@ -70,7 +74,11 @@ def query_generator(num_docs: int, target: dict, with_groundtruth: bool = True):
     for _ in range(num_docs):
         num_data = len(target['query-labels']['data'])
         idx = random.randint(0, num_data - 1)
-        d = Document(content=(target['query']['data'][idx]))
+        # x_blackwhite.shape is (28,28)
+        x_blackwhite = 255 - target['query']['data'][idx]
+        # x_color.shape is (28,28,3)
+        x_color = np.stack((x_blackwhite,) * 3, axis=-1)
+        d = Document(content=x_color)
 
         if with_groundtruth:
             gt = gts[target['query-labels']['data'][idx][0]]
@@ -93,13 +101,15 @@ def print_result(resp):
         top_k = len(d.matches)
         for kk in d.matches:
             kmi = kk.uri
-            result_html.append(f'<img src="{kmi}" style="opacity:{kk.score.value}"/>')
+            result_html.append(
+                f'<img src="{kmi}" style="opacity:{kk.scores["cosine"].value}"/>'
+            )
         result_html.append('</td></tr>\n')
 
         # update evaluation values
         # as evaluator set to return running avg, here we can simply replace the value
-        for evaluation in d.evaluations:
-            evaluation_value[evaluation.op_name] = evaluation.value
+        for k, evaluation in d.evaluations.items():
+            evaluation_value[k] = evaluation.value
 
 
 def write_html(html_path):
@@ -132,14 +142,16 @@ def write_html(html_path):
     except:
         pass  # intentional pass, browser support isn't cross-platform
     finally:
-        default_logger.success(
-            f'You should see a "hello-world.html" opened in your browser, '
+        default_logger.info(
+            f'You should see a "demo.html" opened in your browser, '
             f'if not you may open {url_html_path} manually'
         )
 
-    colored_url = colored('https://opensource.jina.ai', color='cyan', attrs='underline')
-    default_logger.success(
-        f'🤩 Intrigued? Play with "jina hello fashion --help" and learn more about Jina at {colored_url}'
+    colored_url = colored(
+        'https://github.com/jina-ai/jina', color='cyan', attrs='underline'
+    )
+    default_logger.info(
+        f'🤩 Intrigued? Play with `jina hello fashion --help` and learn more about Jina at {colored_url}'
     )
 
 
@@ -159,11 +171,11 @@ def download_data(targets, download_proxy=None, task_name='download fashion-mnis
         )
         opener.add_handler(proxy)
     urllib.request.install_opener(opener)
-    with ProgressBar(task_name=task_name, batch_unit='') as t:
+    with ProgressBar(description=task_name) as t:
         for k, v in targets.items():
             if not os.path.exists(v['filename']):
                 urllib.request.urlretrieve(
-                    v['url'], v['filename'], reporthook=lambda *x: t.update_tick(0.01)
+                    v['url'], v['filename'], reporthook=lambda *x: t.update(0.01)
                 )
             if k == 'index-labels' or k == 'query-labels':
                 v['data'] = load_labels(v['filename'])
@@ -180,7 +192,7 @@ def load_mnist(path):
     """
 
     with gzip.open(path, 'rb') as fp:
-        return np.frombuffer(fp.read(), dtype=np.uint8, offset=16).reshape([-1, 784])
+        return np.frombuffer(fp.read(), dtype=np.uint8, offset=16).reshape([-1, 28, 28])
 
 
 def load_labels(path: str):

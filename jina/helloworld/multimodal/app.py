@@ -1,14 +1,15 @@
 import os
-import zipfile
 import urllib.request
 import webbrowser
+import zipfile
 from pathlib import Path
 
-from jina import Flow, Document, DocumentArray
+from jina import Flow
 from jina.importer import ImportExtensions
-from jina.logging import default_logger
+from jina.logging.predefined import default_logger
 from jina.logging.profile import ProgressBar
 from jina.parsers.helloworld import set_hw_multimodal_parser
+from jina.types.document.generators import from_csv
 
 
 def hello_world(args):
@@ -56,12 +57,13 @@ def hello_world(args):
     f = Flow.load_config('flow-index.yml')
 
     with f, open(f'{args.workdir}/people-img/meta.csv', newline='') as fp:
-        f.index(inputs=DocumentArray.from_csv(fp), request_size=10)
+        f.index(inputs=from_csv(fp), request_size=10, show_progress=True)
 
     # search it!
     f = Flow.load_config('flow-search.yml')
-    # switch to REST gateway
-    f.use_rest_gateway(args.port_expose)
+    # switch to HTTP gateway
+    f.protocol = 'http'
+    f.port_expose = args.port_expose
 
     url_html_path = 'file://' + os.path.abspath(
         os.path.join(os.path.dirname(os.path.realpath(__file__)), 'static/index.html')
@@ -72,7 +74,7 @@ def hello_world(args):
         except:
             pass  # intentional pass, browser support isn't cross-platform
         finally:
-            default_logger.success(
+            default_logger.info(
                 f'You should see a demo page opened in your browser, '
                 f'if not, you may open {url_html_path} manually'
             )
@@ -96,11 +98,11 @@ def download_data(targets, download_proxy=None, task_name='download fashion-mnis
         )
         opener.add_handler(proxy)
     urllib.request.install_opener(opener)
-    with ProgressBar(task_name=task_name, batch_unit='') as t:
+    with ProgressBar(description=task_name) as t:
         for k, v in targets.items():
             if not os.path.exists(v['filename']):
                 urllib.request.urlretrieve(
-                    v['url'], v['filename'], reporthook=lambda *x: t.update_tick(0.01)
+                    v['url'], v['filename'], reporthook=lambda *x: t.update(0.01)
                 )
 
 

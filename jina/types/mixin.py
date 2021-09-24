@@ -44,7 +44,7 @@ class ProtoTypeMixin:
 
         :return: binary string representation of the object
         """
-        return self._pb_body.SerializeToString()
+        return self._pb_body.SerializePartialToString()
 
     @property
     def nbytes(self) -> int:
@@ -61,7 +61,13 @@ class ProtoTypeMixin:
         return str(self._build_content_dict())
 
     def __repr__(self):
-        content = ' '.join(f'{k}={v}' for k, v in self._build_content_dict().items())
+        d = self._build_content_dict()
+        if isinstance(d, list):
+            content = ' '.join(f'{v}' for v in self._build_content_dict())
+        else:
+            content = ' '.join(
+                f'{k}={v}' for k, v in self._build_content_dict().items()
+            )
         content += f' at {id(self)}'
         content = content.strip()
         return f'<{typename(self)} {content}>'

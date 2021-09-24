@@ -9,10 +9,7 @@ from jina.types.request import Request
 def document_factory():
     class DocumentFactory(object):
         def create(self, idx, text, mime_type=None):
-            with Document() as d:
-                d.tags['id'] = idx
-                d.text = text
-                d.mime_type = mime_type
+            d = Document(tags={'id': idx}, text=text, mime_type=mime_type)
             return d
 
     return DocumentFactory()
@@ -25,8 +22,7 @@ def reference_doc(document_factory):
 
 @pytest.fixture
 def chunks(document_factory):
-    req = Request()
-    req.request_type = 'data'
+    req = Request().as_typed_request('data')
     req.docs.extend(
         [
             document_factory.create(1, 'test 1'),
@@ -39,7 +35,7 @@ def chunks(document_factory):
 
 @pytest.fixture
 def chunkarray(chunks, reference_doc):
-    return ChunkArray(docs_proto=chunks, reference_doc=reference_doc)
+    return ChunkArray(doc_views=chunks, reference_doc=reference_doc)
 
 
 def test_append_from_documents(chunkarray, document_factory, reference_doc):

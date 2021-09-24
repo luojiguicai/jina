@@ -17,10 +17,6 @@ def pod(args: 'Namespace'):
         pass
 
 
-# alias
-executor = pod
-
-
 def pea(args: 'Namespace'):
     """
     Start a Pea
@@ -36,24 +32,85 @@ def pea(args: 'Namespace'):
         pass
 
 
+def executor_native(args: 'Namespace'):
+    """
+    Starts an Executor in ZEDRuntime or GRPCDataRuntime depending on the `runtime_cls`
+
+    :param args: arguments coming from the CLI.
+    """
+    from jina.peapods.runtimes.zmq.zed import ZEDRuntime
+    from jina.peapods.runtimes.grpc import GRPCDataRuntime
+
+    if args.runtime_cls == 'ZEDRuntime':
+        runtime_cls = ZEDRuntime
+    elif args.runtime_cls == 'GRPCDataRuntime':
+        runtime_cls = GRPCDataRuntime
+    else:
+        raise RuntimeError(
+            f' runtime_cls {args.runtime_cls} is not supported with `--native` argument. `ZEDRuntime` and `GRPCDataRuntime` are supported'
+        )
+
+    with runtime_cls(args) as rt:
+        rt.logger.success(
+            f' Executor {rt._data_request_handler._executor.metas.name} started'
+        )
+        rt.run_forever()
+
+
+def executor(args: 'Namespace'):
+    """
+    Starts an Executor in any Runtime
+
+    :param args: arguments coming from the CLI.
+
+    :returns: return the same as `pea` or `zed_runtime`
+    """
+    if args.native:
+        return executor_native(args)
+    else:
+        return pea(args)
+
+
+def grpc_data_runtime(args: 'Namespace'):
+    """
+    Starts a GRPCDataRuntime
+
+    :param args: arguments coming from the CLI.
+    """
+    from jina.peapods.runtimes.grpc import GRPCDataRuntime
+
+    with GRPCDataRuntime(args) as runtime:
+        runtime.logger.success(
+            f' Executor {runtime._data_request_handler._executor.metas.name} started'
+        )
+        runtime.run_forever()
+
+
+# alias
+grpc_executor = grpc_data_runtime
+
+
 def gateway(args: 'Namespace'):
     """
     Start a Gateway Pod
 
     :param args: arguments coming from the CLI.
     """
-    pod(args)
+    from jina.enums import GatewayProtocolType
+    from jina.peapods.runtimes import get_runtime
 
+    gateway_runtime_dict = {
+        GatewayProtocolType.GRPC: 'GRPCRuntime',
+        GatewayProtocolType.WEBSOCKET: 'WebSocketRuntime',
+        GatewayProtocolType.HTTP: 'HTTPRuntime',
+    }
+    runtime_cls = get_runtime(gateway_runtime_dict[args.protocol])
 
-def check(args: 'Namespace'):
-    """
-    Check jina config, settings, imports, network etc
-
-    :param args: arguments coming from the CLI.
-    """
-    from jina.checker import ImportChecker
-
-    ImportChecker(args)
+    with runtime_cls(args) as runtime:
+        runtime.logger.success(
+            f' Gateway with protocol {gateway_runtime_dict[args.protocol]} started'
+        )
+        runtime.run_forever()
 
 
 def ping(args: 'Namespace'):
@@ -88,7 +145,7 @@ def export_api(args: 'Namespace'):
     from .export import api_to_dict
     from jina.jaml import JAML
     from jina import __version__
-    from jina.logging import default_logger
+    from jina.logging.predefined import default_logger
     from jina.schemas import get_full_schema
 
     if args.yaml_path:
@@ -148,16 +205,14 @@ def flow(args: 'Namespace'):
 
     :param args: arguments coming from the CLI.
     """
-    from jina.flow import Flow
+    from jina import Flow
 
     if args.uses:
         f = Flow.load_config(args.uses)
         with f:
             f.block()
     else:
-        from jina.logging import default_logger
-
-        default_logger.critical('start a flow from CLI requires a valid "--uses"')
+        raise ValueError('start a flow from CLI requires a valid `--uses`')
 
 
 def optimizer(args: 'Namespace'):
@@ -173,10 +228,20 @@ def optimizer(args: 'Namespace'):
 
 def hub(args: 'Namespace'):
     """
-    Start a hub builder for build, push, pull
+    Start a hub builder for push, pull
+    :param args: arguments coming from the CLI.
+    """
+    from jina.hubble.hubio import HubIO
+
+    getattr(HubIO(args), args.hub)()
+
+
+def help(args: 'Namespace'):
+    """
+    Lookup the usage of certain argument in Jina API.
 
     :param args: arguments coming from the CLI.
     """
-    from jina.docker.hubio import HubIO
+    from .lookup import lookup_and_print
 
-    getattr(HubIO(args), args.hub)()
+    lookup_and_print(args.query.lower())

@@ -1,64 +1,102 @@
 """Module wrapping the Client of Jina."""
-from .base import BaseClient, CallbackFnType, InputType, InputDeleteType
-from .helper import callback_exec
-from .mixin import PostMixin
-from .request import GeneratorSourceType
-from .websocket import WebSocketClientMixin
+import argparse
+from typing import overload, Optional, Union, TYPE_CHECKING
 
-__all__ = ['Client', 'WebSocketClient']
+__all__ = ['Client']
+
+from ..enums import GatewayProtocolType
+
+if TYPE_CHECKING:
+    from .grpc import GRPCClient, AsyncGRPCClient
+    from .websocket import WebSocketClient, AsyncWebSocketClient
+    from .http import HTTPClient, AsyncHTTPClient
 
 
-class Client(PostMixin, BaseClient):
-    """A simple Python client for connecting to the gRPC gateway.
+# overload_inject_start_client
+@overload
+def Client(
+    *,
+    asyncio: Optional[bool] = False,
+    host: Optional[str] = '0.0.0.0',
+    https: Optional[bool] = False,
+    port: Optional[int] = None,
+    protocol: Optional[str] = 'GRPC',
+    proxy: Optional[bool] = False,
+    **kwargs
+) -> Union[
+    'AsyncWebSocketClient',
+    'WebSocketClient',
+    'AsyncGRPCClient',
+    'GRPCClient',
+    'HTTPClient',
+    'AsyncHTTPClient',
+]:
+    """Create a Client. Client is how user interact with Flow
 
-    It manages the asyncio event loop internally, so all interfaces are synchronous from the outside.
+    :param asyncio: If set, then the input and output of this Client work in an asynchronous manner.
+    :param host: The host address of the runtime, by default it is 0.0.0.0.
+    :param https: If set, connect to gateway using https
+    :param port: The port of the Gateway, which the client should connect to.
+    :param protocol: Communication protocol between server and client.
+    :param proxy: If set, respect the http_proxy and https_proxy environment variables. otherwise, it will unset these proxy variables before start. gRPC seems to prefer no proxy
+    :return: the new Client object
+
+    .. # noqa: DAR202
+    .. # noqa: DAR101
+    .. # noqa: DAR003
+    """
+    # overload_inject_end_client
+
+
+def Client(
+    args: Optional['argparse.Namespace'] = None, **kwargs
+) -> Union[
+    'AsyncWebSocketClient',
+    'WebSocketClient',
+    'AsyncGRPCClient',
+    'GRPCClient',
+    'HTTPClient',
+    'AsyncHTTPClient',
+]:
+    """Jina Python client.
+
+    :param args: Namespace args.
+    :param kwargs: Additional arguments.
+    :return: An instance of :class:`GRPCClient` or :class:`WebSocketClient`.
     """
 
-    @property
-    def client(self) -> 'Client':
-        """Return the client object itself
+    protocol = (
+        args.protocol if args else kwargs.get('protocol', GatewayProtocolType.GRPC)
+    )
+    if isinstance(protocol, str):
+        protocol = GatewayProtocolType.from_string(protocol)
 
-        .. # noqa: DAR201"""
-        return self
+    is_async = (args and args.asyncio) or kwargs.get('asyncio', False)
 
+    if protocol == GatewayProtocolType.GRPC:
+        if is_async:
+            from .grpc import AsyncGRPCClient
 
-class WebSocketClient(Client, WebSocketClientMixin):
-    """A Python Client to stream requests from a Flow with a REST Gateway.
+            return AsyncGRPCClient(args, **kwargs)
+        else:
+            from .grpc import GRPCClient
 
-    :class:`WebSocketClient` shares the same interface as :class:`Client` and provides methods like
-    :meth:`index`, "meth:`search`, :meth:`train`, :meth:`update` & :meth:`delete`.
+            return GRPCClient(args, **kwargs)
+    elif protocol == GatewayProtocolType.WEBSOCKET:
+        if is_async:
+            from .websocket import AsyncWebSocketClient
 
-    It is used by default while running operations when we create a `Flow` with `rest_api=True`
+            return AsyncWebSocketClient(args, **kwargs)
+        else:
+            from .websocket import WebSocketClient
 
-    .. highlight:: python
-    .. code-block:: python
+            return WebSocketClient(args, **kwargs)
+    elif protocol == GatewayProtocolType.HTTP:
+        if is_async:
+            from .http import AsyncHTTPClient
 
-        from jina.flow import Flow
-        f = Flow(rest_api=True).add().add()
+            return AsyncHTTPClient(args, **kwargs)
+        else:
+            from .http import HTTPClient
 
-        with f:
-            f.index(['abc'])
-
-
-    :class:`WebSocketClient` can also be used to run operations for a remote Flow
-
-    .. highlight:: python
-    .. code-block:: python
-
-        # A Flow running on remote
-        from jina.flow import Flow
-        f = Flow(rest_api=True, port_expose=34567).add().add()
-
-        with f:
-            f.block()
-
-        # Local WebSocketClient running index & search
-        from jina.clients import WebSocketClient
-
-        client = WebSocketClient(...)
-        client.index(...)
-        client.search(...)
-
-
-    :class:`WebSocketClient` internally handles an event loop to run operations asynchronously.
-    """
+            return HTTPClient(args, **kwargs)

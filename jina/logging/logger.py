@@ -5,9 +5,8 @@ import platform
 import sys
 from typing import Optional
 
-from pkg_resources import resource_filename
-
 from . import formatter
+from .. import __uptime__, __resources_path__
 from ..enums import LogVerbosity
 from ..jaml import JAML
 
@@ -28,7 +27,6 @@ class SysLogHandlerWrapper(logging.handlers.SysLogHandler):
         'WARNING': 'warning',
         'ERROR': 'error',
         'CRITICAL': 'critical',
-        'SUCCESS': 'notice',
     }
 
 
@@ -56,20 +54,15 @@ class JinaLogger:
         quiet: bool = False,
         **kwargs,
     ):
-        from .. import __uptime__
 
         if not log_config:
             log_config = os.getenv(
                 'JINA_LOG_CONFIG',
-                resource_filename(
-                    'jina', '/'.join(('resources', 'logging.default.yml'))
-                ),
+                os.path.join(__resources_path__, 'logging.default.yml'),
             )
 
         if quiet or os.getenv('JINA_LOG_CONFIG', None) == 'QUIET':
-            log_config = resource_filename(
-                'jina', '/'.join(('resources', 'logging.quiet.yml'))
-            )
+            log_config = os.path.join(__resources_path__, 'logging.quiet.yml')
 
         if not identity:
             identity = os.getenv('JINA_LOG_ID', None)
@@ -84,35 +77,24 @@ class JinaLogger:
         self.logger = logging.getLogger(context)
         self.logger.propagate = False
 
-        if workspace_path is None:
-            workspace_path = os.getenv('JINA_LOG_WORKSPACE', '/tmp/jina/')
-
         context_vars = {
             'name': name,
             'uptime': __uptime__,
             'context': context,
-            'workspace_path': workspace_path,
+            'workspace_path': workspace_path
+            or os.getenv('JINA_LOG_WORKSPACE', '/tmp/jina/'),
         }
         if identity:
             context_vars['log_id'] = identity
 
         self.add_handlers(log_config, **context_vars)
-
-        # note logger.success isn't default there
-        success_level = LogVerbosity.SUCCESS.value  # between WARNING and INFO
-        logging.addLevelName(success_level, 'SUCCESS')
-        setattr(
-            self.logger,
-            'success',
-            lambda message: self.logger.log(success_level, message),
-        )
-
-        self.info = self.logger.info
-        self.critical = self.logger.critical
+        self.success = lambda *x: self.logger.log(LogVerbosity.SUCCESS, *x)
         self.debug = self.logger.debug
-        self.error = self.logger.error
         self.warning = self.logger.warning
-        self.success = self.logger.success
+        self.critical = self.logger.critical
+        self.error = self.logger.error
+        self.info = self.logger.info
+        self.debug_enabled = self.logger.isEnabledFor(logging.DEBUG)
 
     @property
     def handlers(self):
@@ -148,7 +130,7 @@ class JinaLogger:
 
         for h in config['handlers']:
             cfg = config['configs'].get(h, None)
-            fmt = getattr(formatter, cfg.get('formatter', 'PlainFormatter'))
+            fmt = getattr(formatter, cfg.get('formatter', 'Formatter'))
 
             if h not in self.supported or not cfg:
                 raise ValueError(

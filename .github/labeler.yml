@@ -7,10 +7,11 @@ area/testing:
   - tests/**/*
 
 area/setup:
-  - ./setup.py
+  - setup.py
   - extra-requirements.txt
   - requirements.txt
   - MANIFEST.in
+  - fastentrypoints.py
 
 area/core:
   - jina/**/*
@@ -92,6 +93,9 @@ component/proto:
 
 component/type:
   - jina/types/**/*
+
+component/math:
+  - jina/math/**/*
 
 component/resource:
   - jina/resources/**/*

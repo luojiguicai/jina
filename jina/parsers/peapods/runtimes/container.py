@@ -7,19 +7,7 @@ def mixin_container_runtime_parser(parser):
     :param parser: the parser instance to which we add arguments
     """
     gp = add_arg_group(parser, title='ContainerRuntime')
-    from jina import __default_executor__
 
-    gp.add_argument(
-        '--uses-internal',
-        type=str,
-        default=__default_executor__,
-        help='''
-The config runs inside the Docker container. 
-
-Syntax and function are the same as `--uses`. This is designed when `--uses="docker://..."` this config is passed to 
-the Docker container.
-''',
-    )
     gp.add_argument(
         '--entrypoint',
         type=str,
@@ -58,4 +46,18 @@ Note,
 - If no split provided, then the basename of that directory will be mounted into container's root path, e.g. `--volumes="/user/test/my-workspace"` will be mounted into `/my-workspace` inside the container. 
 - All volumes are mounted with read-write mode.
 ''',
+    )
+    gp.add_argument(
+        '--gpus',
+        type=str,
+        help='''
+    This argument allows dockerized Jina executor discover local gpu devices.
+
+    Note, 
+    - To access all gpus, use `--gpus all`.
+    - To access multiple gpus, e.g. make use of 2 gpus, use `--gpus 2`.
+    - To access specified gpus based on device id, use `--gpus device=[YOUR-GPU-DEVICE-ID]`
+    - To access specified gpus based on multiple device id, use `--gpus device=[YOUR-GPU-DEVICE-ID1],device=[YOUR-GPU-DEVICE-ID2]`
+    - To specify more parameters, use `--gpus device=[YOUR-GPU-DEVICE-ID],runtime=nvidia,capabilities=display
+    ''',
     )

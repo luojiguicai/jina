@@ -3,7 +3,7 @@ from typing import List, Optional, Type
 
 from .base import VersionedYAMLParser
 from .. import JAMLCompatible
-from ...excepts import BadFlowYAMLVersion
+from ...excepts import BadYAMLVersion
 
 
 def _get_all_parser(cls: Type['JAMLCompatible']):
@@ -13,9 +13,9 @@ def _get_all_parser(cls: Type['JAMLCompatible']):
     :return: a tuple of two elements; first is a list of all parsers, second is the legacy parser for default fallback
     """
     from ...executors import BaseExecutor
-    from ...flow import BaseFlow
+    from ...flow.base import Flow
 
-    if issubclass(cls, BaseFlow):
+    if issubclass(cls, Flow):
         return _get_flow_parser()
     elif issubclass(cls, BaseExecutor):
         return _get_exec_parser()
@@ -69,15 +69,16 @@ def get_parser(
                     UserWarning,
                 )
                 return p()
-        raise BadFlowYAMLVersion(f'{version} is not a valid version number')
+        raise BadYAMLVersion(f'{version} is not a valid version number')
     else:
+        if version is not None:
+            warnings.warn(
+                f'can not find parser for version: {version}, '
+                f'fallback to legacy parser. '
+                f'this usually mean you are using a depreciated YAML format.',
+                DeprecationWarning,
+            )
         # fallback to legacy parser
-        warnings.warn(
-            f'can not find parser for version: {version}, '
-            f'fallback to legacy parser. '
-            f'this usually mean you are using a depreciated YAML format.',
-            DeprecationWarning,
-        )
         return legacy_parser()
 
 

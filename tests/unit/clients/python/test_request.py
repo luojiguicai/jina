@@ -64,10 +64,6 @@ def test_data_type_builder_auto(input_type):
     assert d.text == '123'
     assert t == DataInputType.CONTENT
 
-    d, t = _new_doc_from_data(b'45678', input_type)
-    assert t == DataInputType.CONTENT
-    assert d.buffer == b'45678'
-
     d, t = _new_doc_from_data(b'123', input_type)
     assert t == DataInputType.CONTENT
     assert d.buffer == b'123'
@@ -102,20 +98,6 @@ def test_request_generate_lines_from_list():
     for index, doc in enumerate(request.docs, 1):
         assert doc.mime_type == 'text/plain'
         assert doc.text == f'i\'m dummy doc {index}'
-
-
-def test_request_generate_lines_with_fake_url():
-    def random_lines(num_lines):
-        for j in range(1, num_lines + 1):
-            yield f'https://github.com i\'m dummy doc {j}'
-
-    req = request_generator('', data=random_lines(100), request_size=100)
-
-    request = next(req)
-    assert len(request.docs) == 100
-    for index, doc in enumerate(request.docs, 1):
-        assert doc.mime_type == 'text/plain'
-        assert doc.text == f'https://github.com i\'m dummy doc {index}'
 
 
 def test_request_generate_bytes():

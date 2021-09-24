@@ -1,45 +1,55 @@
 from jina import Flow, Document, Executor, requests, DocumentArray
 
 
-def test_func_simple_routing(mocker):
+def test_func_simple_routing():
     class MyExecutor(Executor):
         @requests(on='/search')
         def foo(self, **kwargs):
             for j in ('docs', 'groundtruths', 'parameters'):
                 assert j in kwargs
             assert len(kwargs['docs']) == 3
+            assert len(kwargs['groundtruths']) == 3
+            assert kwargs['parameters']['hello'] == 'world'
+            assert kwargs['parameters']['topk'] == 10
+            kwargs['docs'][0].tags['hello'] = 'world'
 
     f = Flow().add(uses=MyExecutor)
 
-    done_mock = mocker.Mock()
-    fail_mock = mocker.Mock()
-
     with f:
-        f.post(
+        results = f.post(
             on='/search',
-            inputs=[Document() for _ in range(3)],
+            inputs=[(Document(), Document()) for _ in range(3)],
             parameters={'hello': 'world', 'topk': 10},
-            on_done=done_mock,
-            on_error=fail_mock,
+            return_results=True,
         )
-
-    done_mock.assert_called_once()
-    fail_mock.assert_not_called()
-
-    done_mock = mocker.Mock()
-    fail_mock = mocker.Mock()
+        assert results[0].status.code == 0
+        assert results[0].data.docs[0].tags['hello'] == 'world'
 
     with f:
-        f.post(
+        results = f.post(
             on='/random',
             inputs=[Document() for _ in range(3)],
             parameters={'hello': 'world', 'topk': 10},
-            on_done=done_mock,
-            on_error=fail_mock,
+            return_results=True,
         )
+        assert results[0].status.code == 0
 
-    fail_mock.assert_not_called()
-    done_mock.assert_called_once()
+
+def test_func_failure():
+    class MyExecutor(Executor):
+        @requests(on='/search')
+        def foo(self, **kwargs):
+            raise Exception()
+
+    f = Flow().add(uses=MyExecutor)
+
+    with f:
+        results = f.post(
+            on='/search',
+            inputs=[(Document(), Document()) for _ in range(3)],
+            return_results=True,
+        )
+        assert results[0].status.code == 3
 
 
 def test_func_default_routing():
@@ -101,7 +111,7 @@ def test_func_joiner(mocker):
         Flow()
         .add(uses=M1)
         .add(uses=M2, needs='gateway')
-        .add(uses=Joiner, needs=['pod0', 'pod1'])
+        .add(uses=Joiner, needs=['executor0', 'executor1'])
     )
 
     mock = mocker.Mock()
@@ -176,3 +186,75 @@ def test_target_peapod(mocker):
         f.post('/hello', inputs=Document(), on_done=success_mock, on_error=fail_mock)
         success_mock.assert_called()
         fail_mock.assert_not_called()
+
+
+def test_target_peapod_with_overlaped_name(mocker):
+    class FailExecutor(Executor):
+        @requests
+        def fail(self, **kwargs):
+            raise RuntimeError
+
+    class PassExecutor(Executor):
+        @requests
+        def success(self, **kwargs):
+            pass
+
+    f = (
+        Flow()
+        .add(uses=FailExecutor, name='foo_with_what_ever_suffix')
+        .add(uses=PassExecutor, name='foo')
+    )
+
+    with f:
+        # both pods are called, create no error
+        mock = mocker.Mock()
+        f.post(on='/foo', target_peapod='foo', inputs=Document(), on_error=mock)
+        mock.assert_called()
+
+
+def test_target_peapod_with_one_pathways():
+    f = Flow().add().add(name='my_target')
+    with f:
+        results = f.post(
+            on='/search',
+            inputs=Document(),
+            return_results=True,
+            target_peapod='my_target',
+        )
+        assert len(results[0].data.docs) == 1
+
+
+def test_target_peapod_with_two_pathways():
+    f = Flow().add().add(needs=['gateway', 'executor0'], name='my_target')
+    with f:
+        results = f.post(
+            on='/search',
+            inputs=Document(),
+            return_results=True,
+            target_peapod='my_target',
+        )
+        assert len(results[0].data.docs) == 2
+
+
+def test_target_peapod_with_two_pathways_one_skip():
+    f = Flow().add().add(needs=['gateway', 'executor0']).add(name='my_target')
+    with f:
+        results = f.post(
+            on='/search',
+            inputs=Document(),
+            return_results=True,
+            target_peapod='my_target',
+        )
+        assert len(results[0].data.docs) == 1
+
+
+def test_target_peapod_with_parallel():
+    f = Flow().add(shards=2).add(name='my_target')
+    with f:
+        results = f.post(
+            on='/search',
+            inputs=Document(),
+            return_results=True,
+            target_peapod='my_target',
+        )
+        assert len(results[0].data.docs) == 1

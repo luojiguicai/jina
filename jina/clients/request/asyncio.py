@@ -2,11 +2,11 @@
 
 from typing import AsyncIterator, Optional, Dict
 
+from . import GeneratorSourceType
 from .helper import _new_data_request_from_batch, _new_data_request
-from .. import GeneratorSourceType
 from ...enums import DataInputType
 from ...importer import ImportExtensions
-from ...logging import default_logger
+from ...logging.predefined import default_logger
 from ...types.request import Request
 
 
@@ -23,11 +23,11 @@ async def request_generator(
 
     :param exec_endpoint: the endpoint string, by convention starts with `/`
     :param data: the data to use in the request
-    :param request_size: the request size for the client
+    :param request_size: the number of Documents per request
     :param data_type: if ``data`` is an iterator over self-contained document, i.e. :class:`DocumentSourceType`;
             or an iterator over possible Document content (set to text, blob and buffer).
     :param parameters: the kwargs that will be sent to the executor
-    :param target_peapod: a regex string represent the certain peas/pods request targeted
+    :param target_peapod: a regex string. Only matching Executors will process the request.
     :param kwargs: additional arguments
     :yield: request
     """

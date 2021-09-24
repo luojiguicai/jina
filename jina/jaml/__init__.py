@@ -1,3 +1,4 @@
+import sys
 import os
 import re
 import tempfile
@@ -145,6 +146,31 @@ class JAML:
         )
 
     @staticmethod
+    def registered_classes() -> Dict:
+        """
+        Return a dict of tags and :class:`JAMLCompatible` classes that have been registered.
+
+        :return: tags and classes
+        """
+        return {
+            k[1:]: v
+            for k, v in JinaLoader.yaml_constructors.items()
+            if k and k.startswith('!')
+        }
+
+    @staticmethod
+    def cls_from_tag(tag: str) -> Optional['JAMLCompatible']:
+        """Fetch class from yaml tag
+
+        :param tag: yaml tag
+        :return: class object from tag
+        """
+        if not tag.startswith('!'):
+            tag = '!' + tag
+        bound = JinaLoader.yaml_constructors.get(tag, None)
+        return bound.__self__ if bound else None
+
+    @staticmethod
     def load_no_tags(stream, **kwargs):
         """
         Load yaml object but ignore all customized tags, e.g. !Executor, !Driver, !Flow.
@@ -270,6 +296,10 @@ class JAML:
                 # "root" context is now the global namespace
                 # "this" context is now the current node namespace
                 v = v.format(root=expand_map, this=p, ENV=env_map)
+            except AttributeError as ex:
+                raise AttributeError(
+                    'variable replacement is failed, please check your YAML file.'
+                ) from ex
             except KeyError:
                 pass
 
@@ -430,7 +460,8 @@ class JAMLCompatible(metaclass=JAMLCompatibleType):
         f = filename or getattr(self, 'config_abspath', None)
         if not f:
             f = tempfile.NamedTemporaryFile(
-                'w', delete=False, dir=os.environ.get('JINA_EXECUTOR_WORKDIR', None)
+                'w',
+                delete=False,
             ).name
             warnings.warn(
                 f'no "filename" is given, {self!r}\'s config will be saved to: {f}'
@@ -445,7 +476,10 @@ class JAMLCompatible(metaclass=JAMLCompatibleType):
         *,
         allow_py_modules: bool = True,
         substitute: bool = True,
-        context: Dict[str, Any] = None,
+        context: Optional[Dict[str, Any]] = None,
+        override_with: Optional[Dict] = None,
+        override_metas: Optional[Dict] = None,
+        override_requests: Optional[Dict] = None,
         **kwargs,
     ) -> 'JAMLCompatible':
         """A high-level interface for loading configuration with features
@@ -492,16 +526,43 @@ class JAMLCompatible(metaclass=JAMLCompatibleType):
         :param allow_py_modules: allow importing plugins specified by ``py_modules`` in YAML at any levels
         :param substitute: substitute environment, internal reference and context variables.
         :param context: context replacement variables in a dict, the value of the dict is the replacement.
+        :param override_with: dictionary of parameters to overwrite from the default config's with field
+        :param override_metas: dictionary of parameters to overwrite from the default config's metas field
+        :param override_requests: dictionary of parameters to overwrite from the default config's requests field
         :param kwargs: kwargs for parse_config_source
         :return: :class:`JAMLCompatible` object
         """
+
         stream, s_path = parse_config_source(source, **kwargs)
         with stream as fp:
             # first load yml with no tag
             no_tag_yml = JAML.load_no_tags(fp)
             if no_tag_yml:
-                # extra arguments are parsed to inject_config
                 no_tag_yml.update(**kwargs)
+
+                # if there is `override_with` u should make sure that `uses_with` does not remain in the yaml
+                def _delitem(
+                    obj,
+                    key,
+                ):
+                    value = obj.get(key, None)
+                    if value:
+                        del obj[key]
+                        return
+                    for k, v in obj.items():
+                        if isinstance(v, dict):
+                            _delitem(v, key)
+
+                if override_with is not None:
+                    _delitem(no_tag_yml, key='uses_with')
+                if override_metas is not None:
+                    _delitem(no_tag_yml, key='uses_metas')
+                if override_requests is not None:
+                    _delitem(no_tag_yml, key='uses_requests')
+                cls._override_yml_params(no_tag_yml, 'with', override_with)
+                cls._override_yml_params(no_tag_yml, 'metas', override_metas)
+                cls._override_yml_params(no_tag_yml, 'requests', override_requests)
+
             else:
                 raise BadConfigSource(
                     f'can not construct {cls} from an empty {source}. nothing to read from there'
@@ -510,22 +571,31 @@ class JAMLCompatible(metaclass=JAMLCompatibleType):
                 # expand variables
                 no_tag_yml = JAML.expand_dict(no_tag_yml, context)
             if allow_py_modules:
-                # also add YAML parent path to the search paths
                 load_py_modules(
                     no_tag_yml,
                     extra_search_paths=(os.path.dirname(s_path),) if s_path else None,
                 )
-            from ..flow import BaseFlow
 
-            if issubclass(cls, BaseFlow):
+            from ..flow.base import Flow
+
+            if issubclass(cls, Flow):
                 tag_yml = JAML.unescape(
                     JAML.dump(no_tag_yml),
                     include_unknown_tags=False,
-                    jtype_whitelist=('Flow', 'AsyncFlow'),
+                    jtype_whitelist=('Flow',),
                 )
             else:
                 # revert yaml's tag and load again, this time with substitution
                 tag_yml = JAML.unescape(JAML.dump(no_tag_yml))
-
             # load into object, no more substitute
             return JAML.load(tag_yml, substitute=False)
+
+    @classmethod
+    def _override_yml_params(cls, raw_yaml, field_name, override_field):
+        if override_field is not None:
+            field_params = raw_yaml.get(field_name, None)
+            if field_params:
+                field_params.update(**override_field)
+                raw_yaml.update(field_params)
+            else:
+                raw_yaml[field_name] = override_field

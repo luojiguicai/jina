@@ -7,10 +7,11 @@ import pytest
 
 from jina import Document
 from jina.enums import CompressAlgo
-from jina.flow import Flow
+from jina import Flow
 from tests import random_docs
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('compress_algo', list(CompressAlgo))
 def test_compression(compress_algo, mocker):
 
@@ -18,9 +19,9 @@ def test_compression(compress_algo, mocker):
 
     f = (
         Flow(compress=str(compress_algo))
-            .add()
-            .add(name='DummyEncoder', parallel=2)
-            .add()
+        .add()
+        .add(name='DummyEncoder', parallel=2)
+        .add()
     )
 
     with f:
@@ -29,8 +30,9 @@ def test_compression(compress_algo, mocker):
     response_mock.assert_called()
 
 
-@pytest.mark.parametrize('rest_api', [True, False])
-def test_grpc_gateway_concurrency(rest_api):
+@pytest.mark.slow
+@pytest.mark.parametrize('protocol', ['websocket', 'grpc', 'http'])
+def test_grpc_gateway_concurrency(protocol):
     def _validate(req, start, status_codes, durations, index):
         end = time.time()
         durations[index] = end - start
@@ -50,7 +52,7 @@ def test_grpc_gateway_concurrency(rest_api):
             batch_size=16,
         )
 
-    f = Flow(restful=rest_api).add(parallel=2)
+    f = Flow(protocol=protocol).add(parallel=2)
     concurrency = 100
     with f:
         threads = []

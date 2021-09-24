@@ -45,7 +45,7 @@ function git_commit {
     git config --local user.email "dev-bot@jina.ai"
     git config --local user.name "Jina Dev Bot"
     git tag "v$RELEASE_VER" -m "$(cat ./CHANGELOG.tmp)"
-    git add $INIT_FILE ./CHANGELOG.md jina/hub jina/resources/extra-requirements.txt
+    git add $INIT_FILE ./CHANGELOG.md jina/resources/extra-requirements.txt
     git commit -m "chore(version): the next version will be $NEXT_VER" -m "build($RELEASE_ACTOR): $RELEASE_REASON"
 }
 
@@ -81,14 +81,10 @@ LAST_VER=$(git tag -l | sort -V | tail -n1)
 printf "last version: \e[1;32m$LAST_VER\e[0m\n"
 
 if [[ $1 == "final" ]]; then
-  printf "final release 2.0 is disabled until 2.0.0rc is mature!"
-  exit 1;
   printf "this will be a final release: \e[1;33m$RELEASE_VER\e[0m\n"
 
   NEXT_VER=$(echo $RELEASE_VER | awk -F. -v OFS=. 'NF==1{print ++$NF}; NF>1{$NF=sprintf("%0*d", length($NF), ($NF+1)); print}')
   printf "bump master version to: \e[1;32m$NEXT_VER\e[0m\n"
-
-  git submodule update --remote
 
   make_release_note
 

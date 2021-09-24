@@ -13,8 +13,8 @@ from typing import (
 )
 
 from .metas import get_default_metas
-from .. import DocumentArray
 from ..helper import convert_tuple_to_list
+from ..types.arrays import DocumentArray
 
 
 def wrap_func(cls, func_lst, wrapper):
@@ -57,12 +57,6 @@ def store_init_kwargs(func: Callable) -> Callable:
             if k in tmp:
                 tmp[k] = v
 
-        if getattr(self, 'store_args_kwargs', None):
-            if args:
-                tmp['args'] = args
-            if kwargs:
-                tmp['kwargs'] = {k: v for k, v in kwargs.items() if k not in taboo}
-
         if hasattr(self, '_init_kwargs_dict'):
             self._init_kwargs_dict.update(tmp)
         else:
@@ -76,7 +70,7 @@ def store_init_kwargs(func: Callable) -> Callable:
 
 def requests(
     func: Callable[
-        [DocumentArray, DocumentArray, Dict, List[DocumentArray], List[DocumentArray]],
+        [DocumentArray, Dict, DocumentArray, List[DocumentArray], List[DocumentArray]],
         Optional[DocumentArray],
     ] = None,
     *,
@@ -92,13 +86,15 @@ def requests(
     :param on: the endpoint string, by convention starts with `/`
     :return: decorated function
     """
-    from .. import __default_endpoint__, __num_args_executor_func__
+    from .. import __default_endpoint__, __args_executor_func__
 
     class FunctionMapper:
         def __init__(self, fn):
 
             arg_spec = inspect.getfullargspec(fn)
-            if not arg_spec.varkw and len(arg_spec.args) < __num_args_executor_func__:
+            if not arg_spec.varkw and not __args_executor_func__.issubset(
+                arg_spec.args
+            ):
                 raise TypeError(
                     f'{fn} accepts only {arg_spec.args} which is fewer than expected, '
                     f'please add `**kwargs` to the function signature.'

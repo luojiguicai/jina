@@ -1,10 +1,10 @@
+import inspect
 import os
 from types import SimpleNamespace
 from typing import Dict, TypeVar, Optional, Callable
 
 from .decorators import store_init_kwargs, wrap_func
-from .metas import get_default_metas
-from .. import __default_endpoint__
+from .. import __default_endpoint__, __args_executor_init__
 from ..helper import typename
 from ..jaml import JAMLCompatible, JAML, subvar_regex, internal_var_regex
 
@@ -39,6 +39,15 @@ class ExecutorType(type(JAMLCompatible), type):
 
         cls_id = f'{cls.__module__}.{cls.__name__}'
         if cls_id not in reg_cls_set or getattr(cls, 'force_register', False):
+            arg_spec = inspect.getfullargspec(cls.__init__)
+
+            if not arg_spec.varkw and not __args_executor_init__.issubset(
+                arg_spec.args
+            ):
+                raise TypeError(
+                    f'{cls.__init__} does not follow the full signature of `Executor.__init__`, '
+                    f'please add `**kwargs` to your __init__ function'
+                )
             wrap_func(cls, ['__init__'], store_init_kwargs)
 
             reg_cls_set.add(cls_id)
@@ -77,12 +86,14 @@ class BaseExecutor(JAMLCompatible, metaclass=ExecutorType):
         metas: Optional[Dict] = None,
         requests: Optional[Dict] = None,
         runtime_args: Optional[Dict] = None,
+        **kwargs,
     ):
         """`metas` and `requests` are always auto-filled with values from YAML config.
 
         :param metas: a dict of metas fields
         :param requests: a dict of endpoint-function mapping
         :param runtime_args: a dict of arguments injected from :class:`Runtime` during runtime
+        :param kwargs: additional extra keyword arguments to avoid failing when extra params ara passed that are not expected
         """
         self._add_metas(metas)
         self._add_requests(requests)
@@ -119,6 +130,7 @@ class BaseExecutor(JAMLCompatible, metaclass=ExecutorType):
             self.requests = request_mapping
 
     def _add_metas(self, _metas: Optional[Dict]):
+        from .metas import get_default_metas
 
         tmp = get_default_metas()
 
@@ -161,7 +173,7 @@ class BaseExecutor(JAMLCompatible, metaclass=ExecutorType):
         # `name` is important as it serves as an identifier of the executor
         # if not given, then set a name by the rule
         if not getattr(target, 'name', None):
-            setattr(target, 'name', typename(self))
+            setattr(target, 'name', self.__class__.__name__)
 
         self.metas = target
 
@@ -195,21 +207,25 @@ class BaseExecutor(JAMLCompatible, metaclass=ExecutorType):
 
         :return: returns the workspace of the shard of this Executor.
         """
-        if getattr(self.runtime_args, 'workspace', None):
-            complete_workspace = os.path.join(
-                self.runtime_args.workspace, self.metas.name
-            )
+        workspace = getattr(self.metas, 'workspace') or getattr(
+            self.runtime_args, 'workspace', None
+        )
+        if workspace:
+            complete_workspace = os.path.join(workspace, self.metas.name)
             replica_id = getattr(self.runtime_args, 'replica_id', None)
             pea_id = getattr(self.runtime_args, 'pea_id', None)
             if replica_id is not None and replica_id != -1:
                 complete_workspace = os.path.join(complete_workspace, str(replica_id))
             if pea_id is not None and pea_id != -1:
                 complete_workspace = os.path.join(complete_workspace, str(pea_id))
+            if not os.path.exists(complete_workspace):
+                os.makedirs(complete_workspace)
             return os.path.abspath(complete_workspace)
-        elif self.metas.workspace is not None:
-            return os.path.abspath(self.metas.workspace)
         else:
-            raise Exception('can not find metas.workspace or runtime_args.workspace')
+            raise ValueError(
+                'Neither `metas.workspace` nor `runtime_args.workspace` is set, '
+                'are you using this Executor is a Flow?'
+            )
 
     def __enter__(self):
         return self

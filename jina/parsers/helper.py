@@ -1,12 +1,12 @@
 """Module for helper functions in the parser"""
 import argparse
 import os
-import uuid
-from typing import Tuple
+import warnings
+from typing import Tuple, List
 
 _SHOW_ALL_ARGS = 'JINA_FULL_CLI' in os.environ
 if _SHOW_ALL_ARGS:
-    from jina.logging import default_logger
+    from jina.logging.predefined import default_logger
 
     default_logger.warning(
         f'Setting {_SHOW_ALL_ARGS} will make remote Peas with sharding not work when using JinaD'
@@ -21,16 +21,6 @@ def add_arg_group(parser, title):
     :return: the new parser
     """
     return parser.add_argument_group(f'{title} arguments')
-
-
-def UUIDString(astring) -> str:
-    """argparse type to check if a string is a valid UUID string
-
-    :param astring: the string to check
-    :return: the string
-    """
-    uuid.UUID(astring)
-    return astring
 
 
 class KVAppendAction(argparse.Action):
@@ -68,42 +58,6 @@ class KVAppendAction(argparse.Action):
         setattr(args, self.dest, d)
 
 
-class DockerKwargsAppendAction(argparse.Action):
-    """argparse action to split an argument into KEY: VALUE form
-    on the first : and append to a dictionary.
-    This is used for setting up arbitrary kwargs for docker sdk
-    """
-
-    def __call__(self, parser, args, values, option_string=None):
-        """
-        call the DockerKwargsAppendAction
-
-
-        .. # noqa: DAR401
-        :param parser: the parser
-        :param args: args to initialize the values
-        :param values: the values to add to the parser
-        :param option_string: inherited, not used
-        """
-        import json
-
-        d = getattr(args, self.dest) or {}
-
-        for value in values:
-            try:
-                d.update(json.loads(value))
-            except json.JSONDecodeError:
-                try:
-                    (k, v) = value.split(':', 1)
-                except ValueError:
-                    raise argparse.ArgumentTypeError(
-                        f'could not parse argument \"{values[0]}\" as k:v format'
-                    )
-                # transform from text to actual type (int, list, etc...)
-                d[k] = json.loads(v)
-        setattr(args, self.dest, d)
-
-
 class _ColoredHelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
     class _Section(object):
         def __init__(self, formatter, parent, heading=None):
@@ -133,12 +87,10 @@ class _ColoredHelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
                 captial_heading = ' '.join(
                     v[0].upper() + v[1:] for v in self.heading.split(' ')
                 )
-                heading = '⚙️  %*s%s\n' % (
+                heading = '%*s%s\n' % (
                     current_indent,
                     '',
-                    colored(
-                        captial_heading, 'cyan', attrs=['underline', 'bold', 'reverse']
-                    ),
+                    colored(f'▮ {captial_heading}', 'cyan', attrs=['bold']),
                 )
             else:
                 heading = ''
@@ -195,9 +147,6 @@ class _ColoredHelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
 
     def _get_default_metavar_for_optional(self, action):
         return ''
-
-    # def _get_default_metavar_for_positional(self, action):
-    #     return ''
 
     def _expand_help(self, action):
         params = dict(vars(action), prog=self._prog)

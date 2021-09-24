@@ -16,7 +16,7 @@ To use these enums in YAML config, following the example below:
         parallel_type: any
 """
 
-from enum import IntEnum, EnumMeta
+from enum import Enum, IntEnum, EnumMeta
 
 
 class EnumType(EnumMeta):
@@ -159,6 +159,7 @@ class SocketType(BetterEnum):
     PAIR_CONNECT = 9
     ROUTER_BIND = 10
     DEALER_CONNECT = 11
+    ROUTER_CONNECT = 13
 
     @property
     def is_bind(self) -> bool:
@@ -218,6 +219,16 @@ class FlowBuildLevel(BetterEnum):
     EMPTY = 0  #: Nothing is built
     GRAPH = 1  #: The underlying graph is built, you may visualize the flow
     RUNNING = 2  #: the graph is started and all pods are running
+
+
+class GatewayProtocolType(BetterEnum):
+    """
+    Gateway communication protocol
+    """
+
+    GRPC = 0
+    HTTP = 1
+    WEBSOCKET = 2
 
 
 class PeaRoleType(BetterEnum):
@@ -311,6 +322,13 @@ class FlowInspectType(BetterEnum):
         return self.value in {0, 2}
 
 
+class InfrastructureType(BetterEnum):
+    """Infrastructure where the Flow runs on."""
+
+    JINA = 0  # flow is orchestrated by Jina
+    K8S = 1  # flow is orchestrated by kubernetes
+
+
 class RemoteAccessType(BetterEnum):
     """Remote access type when connect to the host."""
 
@@ -341,6 +359,15 @@ class RuntimeBackendType(BetterEnum):
 
     THREAD = 0
     PROCESS = 1
+
+
+class ProgressBarStatus(BetterEnum):
+    """Type of the progress bar status."""
+
+    WORKING = 0
+    DONE = 1
+    CANCELED = 2
+    ERROR = 3
 
 
 class EmbeddingClsType(BetterEnum):
@@ -417,6 +444,17 @@ class EmbeddingClsType(BetterEnum):
         :return: True is class is stackable
         """
         return self.value in [1, 2]
+
+
+class RemoteWorkspaceState(str, Enum):
+    """Enum representing state of remote workspace created by JinaD"""
+
+    PENDING = 'PENDING'
+    CREATING = 'CREATING'
+    UPDATING = 'UPDATING'
+    ACTIVE = 'ACTIVE'
+    FAILED = 'FAILED'
+    DELETING = 'DELETING'
 
 
 def replace_enum_to_str(obj):

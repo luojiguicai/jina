@@ -10,11 +10,10 @@ import threading
 import time
 import uuid
 import warnings
+
 from argparse import ArgumentParser, Namespace
-from contextlib import contextmanager
 from datetime import datetime
 from itertools import islice
-from pathlib import Path
 from types import SimpleNamespace
 from typing import (
     Tuple,
@@ -28,9 +27,6 @@ from typing import (
     Sequence,
     Iterable,
 )
-from urllib.request import Request, urlopen
-
-import numpy as np
 
 __all__ = [
     'batch_iterator',
@@ -43,7 +39,6 @@ __all__ = [
     'ArgNamespace',
     'is_valid_local_config_source',
     'cached_property',
-    'is_url',
     'typename',
     'get_public_ip',
     'get_internal_ip',
@@ -51,6 +46,10 @@ __all__ = [
     'run_async',
     'deprecated_alias',
     'countdown',
+    'CatchAllCleanupContextManager',
+    'download_mermaid_url',
+    'get_readable_size',
+    'get_or_reuse_loop',
 ]
 
 
@@ -126,6 +125,21 @@ def deprecated_alias(**aliases):
     return deco
 
 
+def deprecated_method(new_function_name):
+    def deco(func):
+        def wrapper(*args, **kwargs):
+            warnings.warn(
+                f'`{func.__name__}` is renamed to `{new_function_name}`, the usage of `{func.__name__}` is '
+                f'deprecated and will be removed.',
+                DeprecationWarning,
+            )
+            return func(*args, **kwargs)
+
+        return wrapper
+
+    return deco
+
+
 def get_readable_size(num_bytes: Union[int, float]) -> str:
     """
     Transform the bytes into readable value with different units (e.g. 1 KB, 20 MB, 30.1 GB).
@@ -144,33 +158,10 @@ def get_readable_size(num_bytes: Union[int, float]) -> str:
         return f'{num_bytes / (1024 ** 3):.1f} GB'
 
 
-def call_obj_fn(obj, fn: str):
-    """
-    Get a named attribute from an object; getattr(obj, 'fn') is equivalent to obj.fn.
-
-    :param obj: Target object.
-    :param fn: Desired attribute.
-    """
-    if obj is not None and hasattr(obj, fn):
-        getattr(obj, fn)()
-
-
-def touch_dir(base_dir: str) -> None:
-    """
-    Create a directory from given path if it doesn't exist.
-
-    :param base_dir: Path of target path.
-    """
-    if not os.path.exists(base_dir):
-        os.makedirs(base_dir)
-
-
 def batch_iterator(
     data: Iterable[Any],
     batch_size: int,
     axis: int = 0,
-    yield_slice: bool = False,
-    yield_dict: bool = False,
 ) -> Iterator[Any]:
     """
     Get an iterator of batches of data.
@@ -178,14 +169,12 @@ def batch_iterator(
     For example:
     .. highlight:: python
     .. code-block:: python
-            for batch in batch_iterator(data, batch_size, split_over_axis, yield_slice=yield_slice):
+            for req in batch_iterator(data, batch_size, split_over_axis):
                 # Do something with batch
 
     :param data: Data source.
     :param batch_size: Size of one batch.
     :param axis: Determine which axis to iterate for np.ndarray data.
-    :param yield_slice: Return tuple type of data if True else return np.ndarray type.
-    :param yield_dict: Return dict type of data if True else return tuple type.
     :yield: data
     :return: An Iterator of batch data.
     """
@@ -199,18 +188,12 @@ def batch_iterator(
         _d = data.ndim
         sl = [slice(None)] * _d
         if batch_size >= _l:
-            if yield_slice:
-                yield tuple(sl)
-            else:
-                yield data
+            yield data
             return
         for start in range(0, _l, batch_size):
             end = min(_l, start + batch_size)
             sl[axis] = slice(start, end)
-            if yield_slice:
-                yield tuple(sl)
-            else:
-                yield data[tuple(sl)]
+            yield data[tuple(sl)]
     elif isinstance(data, Sequence):
         if batch_size >= len(data):
             yield data
@@ -219,11 +202,9 @@ def batch_iterator(
             yield data[_ : _ + batch_size]
     elif isinstance(data, Iterable):
         # as iterator, there is no way to know the length of it
+        iterator = iter(data)
         while True:
-            if yield_dict:
-                chunk = dict(islice(data, batch_size))
-            else:
-                chunk = tuple(islice(data, batch_size))
+            chunk = tuple(islice(iterator, batch_size))
             if not chunk:
                 return
             yield chunk
@@ -433,15 +414,17 @@ def random_port() -> Optional[int]:
                         pass
 
     _port = None
-    if 'JINA_RANDOM_PORTS' in os.environ:
+    if 'JINA_RANDOM_PORT_MIN' in os.environ or 'JINA_RANDOM_PORT_MAX' in os.environ:
         min_port = int(os.environ.get('JINA_RANDOM_PORT_MIN', '49153'))
         max_port = int(os.environ.get('JINA_RANDOM_PORT_MAX', '65535'))
-        for _port in np.random.permutation(range(min_port, max_port + 1)):
+        all_ports = list(range(min_port, max_port + 1))
+        random.shuffle(all_ports)
+        for _port in all_ports:
             if _get_port(_port) is not None:
                 break
         else:
             raise OSError(
-                f'Couldn\'t find an available port in [{min_port}, {max_port}].'
+                f'can not find an available port between [{min_port}, {max_port}].'
             )
     else:
         _port = _get_port()
@@ -576,7 +559,7 @@ _HIGHLIGHTS = {
 }
 
 _COLORS = {
-    'grey': 30,
+    'black': 30,
     'red': 31,
     'green': 32,
     'yellow': 33,
@@ -587,61 +570,6 @@ _COLORS = {
 }
 
 _RESET = '\033[0m'
-
-
-def build_url_regex_pattern():
-    """
-    Set up the regex pattern of URL.
-
-    :return: Regex pattern.
-    """
-    ul = '\u00a1-\uffff'  # Unicode letters range (must not be a raw string).
-
-    # IP patterns
-    ipv4_re = (
-        r'(?:25[0-5]|2[0-4]\d|[0-1]?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|[0-1]?\d?\d)){3}'
-    )
-    ipv6_re = r'\[[0-9a-f:.]+\]'  # (simple regex, validated later)
-
-    # Host patterns
-    hostname_re = (
-        r'[a-z' + ul + r'0-9](?:[a-z' + ul + r'0-9-]{0,61}[a-z' + ul + r'0-9])?'
-    )
-    # Max length for domain name labels is 63 characters per RFC 1034 sec. 3.1
-    domain_re = r'(?:\.(?!-)[a-z' + ul + r'0-9-]{1,63}(?<!-))*'
-    tld_re = (
-        r'\.'  # dot
-        r'(?!-)'  # can't start with a dash
-        r'(?:[a-z' + ul + '-]{2,63}'  # domain label
-        r'|xn--[a-z0-9]{1,59})'  # or punycode label
-        r'(?<!-)'  # can't end with a dash
-        r'\.?'  # may have a trailing dot
-    )
-    host_re = '(' + hostname_re + domain_re + tld_re + '|localhost)'
-
-    return re.compile(
-        r'^(?:[a-z0-9.+-]*)://'  # scheme is validated separately
-        r'(?:[^\s:@/]+(?::[^\s:@/]*)?@)?'  # user:pass authentication
-        r'(?:' + ipv4_re + '|' + ipv6_re + '|' + host_re + ')'
-        r'(?::\d{2,5})?'  # port
-        r'(?:[/?#][^\s]*)?'  # resource path
-        r'\Z',
-        re.IGNORECASE,
-    )
-
-
-url_pat = build_url_regex_pattern()
-
-
-def is_url(text):
-    """
-    Check if the text is URL.
-
-    :param text: The target text.
-    :return: True if text is URL else False.
-    """
-    return url_pat.match(text) is not None
-
 
 if os.name == 'nt':
     os.system('color')
@@ -694,7 +622,6 @@ def colored(
         fmt_str = '\033[%dm%s'
         if color:
             text = fmt_str % (_COLORS[color], text)
-
         if on_color:
             text = fmt_str % (_HIGHLIGHTS[on_color], text)
 
@@ -706,6 +633,55 @@ def colored(
                     text = fmt_str % (_ATTRIBUTES[attr], text)
         text += _RESET
     return text
+
+
+class ColorContext:
+    def __init__(self, color: str, bold: Optional[bool] = False):
+        self._color = color
+        self._bold = bold
+
+    def __enter__(self):
+        if self._bold:
+            fmt_str = '\033[1;%dm'
+        else:
+            fmt_str = '\033[0;%dm'
+
+        c = fmt_str % (_COLORS[self._color])
+        print(c, flush=True, end='')
+        return self
+
+    def __exit__(self, typ, value, traceback):
+        print(_RESET, flush=True, end='')
+
+
+def warn_unknown_args(unknown_args: List[str]):
+    """Creates warnings for all given arguments.
+
+    :param unknown_args: arguments that are possibly unknown to Jina
+    """
+
+    from cli.lookup import _build_lookup_table
+
+    all_args = _build_lookup_table()[0]
+
+    has_migration_tip = False
+    real_unknown_args = []
+    warn_strs = []
+    for arg in unknown_args:
+        if arg.replace('--', '') not in all_args:
+            from .parsers.deprecated import get_deprecated_replacement
+
+            new_arg = get_deprecated_replacement(arg)
+            if new_arg:
+                if not has_migration_tip:
+                    warn_strs.append('Migration tips:')
+                    has_migration_tip = True
+                warn_strs.append(f'\t`{arg}` has been renamed to `{new_arg}`')
+            real_unknown_args.append(arg)
+
+    if real_unknown_args:
+        warn_strs = [f'ignored unknown argument: {real_unknown_args}.'] + warn_strs
+        warnings.warn(''.join(warn_strs))
 
 
 class ArgNamespace:
@@ -740,54 +716,34 @@ class ArgNamespace:
 
     @staticmethod
     def kwargs2namespace(
-        kwargs: Dict[str, Union[str, int, bool]], parser: ArgumentParser
+        kwargs: Dict[str, Union[str, int, bool]],
+        parser: ArgumentParser,
+        warn_unknown: bool = False,
+        fallback_parsers: List[ArgumentParser] = None,
     ) -> Namespace:
         """
         Convert dict to a namespace.
 
         :param kwargs: dictionary of key-values to be converted
         :param parser: the parser for building kwargs into a namespace
+        :param warn_unknown: True, if unknown arguments should be logged
+        :param fallback_parsers: a list of parsers to help resolving the args
         :return: argument list
         """
         args = ArgNamespace.kwargs2list(kwargs)
-        try:
-            p_args, unknown_args = parser.parse_known_args(args)
-        except SystemExit:
-            raise ValueError(
-                f'bad arguments "{args}" with parser {parser}, '
-                'you may want to double check your args '
-            )
+        p_args, unknown_args = parser.parse_known_args(args)
+        if warn_unknown and unknown_args:
+            _leftovers = set(unknown_args)
+            if fallback_parsers:
+                for p in fallback_parsers:
+                    _, _unk_args = p.parse_known_args(args)
+                    _leftovers = _leftovers.intersection(_unk_args)
+                    if not _leftovers:
+                        # all args have been resolved
+                        break
+            warn_unknown_args(_leftovers)
+
         return p_args
-
-    @staticmethod
-    def get_parsed_args(
-        kwargs: Dict[str, Union[str, int, bool]], parser: ArgumentParser
-    ) -> Tuple[List[str], Namespace, List[Any]]:
-        """
-        Get all parsed args info in a dict.
-
-        :param kwargs: dictionary of key-values to be converted
-        :param parser: the parser for building kwargs into a namespace
-        :return: argument namespace, positional arguments and unknown arguments
-        """
-        args = ArgNamespace.kwargs2list(kwargs)
-        try:
-            p_args, unknown_args = parser.parse_known_args(args)
-            if unknown_args:
-                from .logging import default_logger
-
-                default_logger.debug(
-                    f'parser {typename(parser)} can not '
-                    f'recognize the following args: {unknown_args}, '
-                    f'they are ignored. if you are using them from a global args (e.g. Flow), '
-                    f'then please ignore this message'
-                )
-        except SystemExit:
-            raise ValueError(
-                f'bad arguments "{args}" with parser {parser}, '
-                'you may want to double check your args '
-            )
-        return args, p_args, unknown_args
 
     @staticmethod
     def get_non_defaults_args(
@@ -856,20 +812,25 @@ def get_full_version() -> Optional[Tuple[Dict, Dict]]:
 
     :return: Version information and environment variables
     """
-    from . import __version__, __proto_version__, __jina_env__
+    import os, grpc, zmq, numpy, google.protobuf, yaml, platform
+    from . import (
+        __version__,
+        __proto_version__,
+        __jina_env__,
+        __uptime__,
+        __unset_msg__,
+    )
     from google.protobuf.internal import api_implementation
-    import os, zmq, numpy, google.protobuf, grpc, yaml
     from grpc import _grpcio_metadata
-    from pkg_resources import resource_filename
-    import platform
-    from .logging import default_logger
+    from jina.logging.predefined import default_logger
+    from uuid import getnode
 
     try:
 
         info = {
             'jina': __version__,
             'jina-proto': __proto_version__,
-            'jina-vcs-tag': os.environ.get('JINA_VCS_VERSION', '(unset)'),
+            'jina-vcs-tag': os.environ.get('JINA_VCS_VERSION', __unset_msg__),
             'libzmq': zmq.zmq_version(),
             'pyzmq': numpy.__version__,
             'protobuf': google.protobuf.__version__,
@@ -882,9 +843,13 @@ def get_full_version() -> Optional[Tuple[Dict, Dict]]:
             'platform-version': platform.version(),
             'architecture': platform.machine(),
             'processor': platform.processor(),
-            'jina-resources': resource_filename('jina', 'resources'),
+            'uid': getnode(),
+            'session-id': str(random_uuid(use_uuid1=True)),
+            'uptime': __uptime__,
+            'ci-vendor': get_ci_vendor() or __unset_msg__,
         }
-        env_info = {k: os.getenv(k, '(unset)') for k in __jina_env__}
+
+        env_info = {k: os.getenv(k, __unset_msg__) for k in __jina_env__}
         full_version = info, env_info
     except Exception as e:
         default_logger.error(str(e))
@@ -907,16 +872,16 @@ def format_full_version_info(info: Dict, env_info: Dict) -> str:
 
 
 def _use_uvloop():
-    from .importer import ImportExtensions
-
-    with ImportExtensions(
-        required=False,
-        help_text='Jina uses uvloop to manage events and sockets, '
-        'it often yields better performance than builtin asyncio',
-    ):
+    if 'JINA_DISABLE_UVLOOP' in os.environ:
+        return
+    try:
         import uvloop
 
         asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    except ModuleNotFoundError:
+        warnings.warn(
+            'Install `uvloop` via `pip install "jina[uvloop]"` for better performance.'
+        )
 
 
 def get_or_reuse_loop():
@@ -930,8 +895,7 @@ def get_or_reuse_loop():
         if loop.is_closed():
             raise RuntimeError
     except RuntimeError:
-        if 'JINA_DISABLE_UVLOOP' not in os.environ:
-            _use_uvloop()
+        _use_uvloop()
         # no running event loop
         # create a new loop
         loop = asyncio.new_event_loop()
@@ -952,6 +916,26 @@ def typename(obj):
         return f'{obj.__module__}.{obj.__name__}'
     except AttributeError:
         return str(obj)
+
+
+class CatchAllCleanupContextManager:
+    """
+    This context manager guarantees, that the :method:``__exit__`` of the
+    sub context is called, even when there is an Exception in the
+    :method:``__enter__``.
+
+    :param sub_context: The context, that should be taken care of.
+    """
+
+    def __init__(self, sub_context):
+        self.sub_context = sub_context
+
+    def __enter__(self):
+        pass
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type:
+            self.sub_context.__exit__(exc_type, exc_val, exc_tb)
 
 
 class cached_property:
@@ -979,6 +963,48 @@ class cached_property:
             if hasattr(cached_value, 'close'):
                 cached_value.close()
             del obj.__dict__[f'CACHED_{self.func.__name__}']
+
+
+class _cache_invalidate:
+    """Class for cache invalidation, remove strategy.
+
+    :param func: func to wrap as a decorator.
+    :param attribute: String as the function name to invalidate cached
+        data. E.g. in :class:`cached_property` we cache data inside the class obj
+        with the `key`: `CACHED_{func.__name__}`, the func name in `cached_property`
+        is the name to invalidate.
+    """
+
+    def __init__(self, func, attribute: str):
+        self.func = func
+        self.attribute = attribute
+
+    def __call__(self, *args, **kwargs):
+        obj = args[0]
+        cached_key = f'CACHED_{self.attribute}'
+        if cached_key in obj.__dict__:
+            del obj.__dict__[cached_key]  # invalidate
+        self.func(*args, **kwargs)
+
+    def __get__(self, obj, cls):
+        from functools import partial
+
+        return partial(self.__call__, obj)
+
+
+def cache_invalidate(attribute: str):
+    """The cache invalidator decorator to wrap the method call.
+
+    Check the implementation in :class:`_cache_invalidate`.
+
+    :param attribute: The func name as was stored in the obj to invalidate.
+    :return: wrapped method.
+    """
+
+    def _wrap(func):
+        return _cache_invalidate(func, attribute)
+
+    return _wrap
 
 
 def get_now_timestamp():
@@ -1039,29 +1065,36 @@ def get_internal_ip():
     return ip
 
 
-def get_public_ip():
+def get_public_ip(timeout: float = 0.3):
     """
     Return the public IP address of the gateway for connecting from other machine in the public network.
 
+    :param timeout: the seconds to wait until return None.
+
     :return: Public IP address.
+
+    .. warn::
+        Set :param:`timeout` to a large number will block the Flow.
+
     """
     import urllib.request
-
-    timeout = 0.2
 
     results = []
 
     def _get_ip(url):
         try:
-            with urllib.request.urlopen(url, timeout=timeout) as fp:
-                results.append(fp.read().decode('utf8'))
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=timeout) as fp:
+                _ip = fp.read().decode()
+                results.append(_ip)
+
         except:
-            pass
+            pass  # intentionally ignored, public ip is not showed
 
     ip_server_list = [
         'https://api.ipify.org',
         'https://ident.me',
-        'https://ipinfo.io/ip',
+        'https://checkip.amazonaws.com/',
     ]
 
     threads = []
@@ -1123,11 +1156,15 @@ def run_async(func, *args, **kwargs):
     .. see_also:
         https://stackoverflow.com/questions/55409641/asyncio-run-cannot-be-called-from-a-running-event-loop
 
+    call `run_async(my_function, any_event_loop=True, *args, **kwargs)` to enable run with any eventloop
+
     :param func: function to run
     :param args: parameters
     :param kwargs: key-value parameters
     :return: asyncio.run(func)
     """
+
+    any_event_loop = kwargs.pop('any_event_loop', False)
 
     class _RunThread(threading.Thread):
         """Create a running thread when in Jupyter notebook."""
@@ -1144,7 +1181,7 @@ def run_async(func, *args, **kwargs):
     if loop and loop.is_running():
         # eventloop already exist
         # running inside Jupyter
-        if is_jupyter():
+        if any_event_loop or is_jupyter():
             thread = _RunThread()
             thread.start()
             thread.join()
@@ -1161,7 +1198,7 @@ def run_async(func, *args, **kwargs):
             raise RuntimeError(
                 'you have an eventloop running but not using Jupyter/ipython, '
                 'this may mean you are using Jina with other integration? if so, then you '
-                'may want to use AsyncClient/AsyncFlow instead of Client/Flow. If not, then '
+                'may want to use Client/Flow(asyncio=True). If not, then '
                 'please report this issue here: https://github.com/jina-ai/jina'
             )
     else:
@@ -1177,43 +1214,6 @@ def slugify(value):
     """
     s = str(value).strip().replace(' ', '_')
     return re.sub(r'(?u)[^-\w.]', '', s)
-
-
-@contextmanager
-def change_cwd(path):
-    """
-    Change the current working dir to ``path`` in a context and set it back to the original one when leaves the context.
-    Yields nothing
-
-    :param path: Target path.
-    :yields: nothing
-    """
-    curdir = os.getcwd()
-    os.chdir(path)
-    try:
-        yield
-    finally:
-        os.chdir(curdir)
-
-
-@contextmanager
-def change_env(key, val):
-    """
-    Change the environment of ``key`` to ``val`` in a context and set it back to the original one when leaves the context.
-
-    :param key: Old environment variable.
-    :param val: New environment variable.
-    :yields: nothing
-    """
-    old_var = os.environ.get(key, None)
-    os.environ[key] = val
-    try:
-        yield
-    finally:
-        if old_var:
-            os.environ[key] = old_var
-        else:
-            os.environ.pop(key)
 
 
 def is_yaml_filepath(val) -> bool:
@@ -1234,29 +1234,18 @@ def download_mermaid_url(mermaid_url, output) -> None:
     :param mermaid_url: The URL of the image.
     :param output: A filename specifying the name of the image to be created, the suffix svg/jpg determines the file type of the output image.
     """
+    from urllib.request import Request, urlopen
+
     try:
         req = Request(mermaid_url, headers={'User-Agent': 'Mozilla/5.0'})
         with open(output, 'wb') as fp:
             fp.write(urlopen(req).read())
     except:
-        from jina.logging import default_logger
+        from jina.logging.predefined import default_logger
 
         default_logger.error(
             'can not download image, please check your graph and the network connections'
         )
-
-
-def ding(req):
-    """Play a ding sound `on_done`, used in 2021 April fools day
-
-    # noqa: DAR101
-    """
-    import subprocess
-    from pkg_resources import resource_filename
-
-    soundfx = resource_filename('jina', '/'.join(('resources', 'soundfx', 'bell.mp3')))
-
-    subprocess.call(f'ffplay  -nodisp -autoexit {soundfx} >/dev/null 2>&1', shell=True)
 
 
 def find_request_binding(target):
@@ -1292,30 +1281,6 @@ def find_request_binding(target):
     return res
 
 
-def _canonical_request_name(req_name: str):
-    """Return the canonical name of a request
-
-    :param req_name: the original request name
-    :return: canonical form of the request
-    """
-    if req_name.startswith('/'):
-        # new data request
-        return f'data://{req_name}'
-    else:
-        # legacy request type
-        return req_name.lower().replace('request', '')
-
-
-def physical_size(directory: str) -> int:
-    """Return the size of the given directory in bytes
-
-    :param directory: directory as :str:
-    :return: byte size of the given directory
-    """
-    root_directory = Path(directory)
-    return sum(f.stat().st_size for f in root_directory.glob('**/*') if f.is_file())
-
-
 def dunder_get(_dict: Any, key: str) -> Any:
     """Returns value for a specified dunderkey
     A "dunderkey" is just a fieldname that may or may not contain
@@ -1340,11 +1305,15 @@ def dunder_get(_dict: Any, key: str) -> Any:
     except ValueError:
         pass
 
+    from google.protobuf.struct_pb2 import ListValue
     from google.protobuf.struct_pb2 import Struct
+    from google.protobuf.pyext._message import MessageMapContainer
 
     if isinstance(part1, int):
         result = _dict[part1]
-    elif isinstance(_dict, (dict, Struct)):
+    elif isinstance(_dict, (Iterable, ListValue)):
+        result = _dict[part1]
+    elif isinstance(_dict, (dict, Struct, MessageMapContainer)):
         if part1 in _dict:
             result = _dict[part1]
         else:
@@ -1353,3 +1322,45 @@ def dunder_get(_dict: Any, key: str) -> Any:
         result = getattr(_dict, part1)
 
     return dunder_get(result, part2) if part2 else result
+
+
+if False:
+    from fastapi import FastAPI
+
+
+def extend_rest_interface(app: 'FastAPI') -> 'FastAPI':
+    """Extend Jina built-in FastAPI instance with customized APIs, routing, etc.
+
+    :param app: the built-in FastAPI instance given by Jina
+    :return: the extended FastAPI instance
+
+    .. highlight:: python
+    .. code-block:: python
+
+        def extend_rest_interface(app: 'FastAPI'):
+
+            @app.get('/extension1')
+            async def root():
+                return {"message": "Hello World"}
+
+            return app
+    """
+    return app
+
+
+def get_ci_vendor() -> Optional[str]:
+    from jina import __resources_path__
+
+    with open(os.path.join(__resources_path__, 'ci-vendors.json')) as fp:
+        all_cis = json.load(fp)
+        for c in all_cis:
+            if isinstance(c['env'], str) and c['env'] in os.environ:
+                return c['constant']
+            elif isinstance(c['env'], dict):
+                for k, v in c['env'].items():
+                    if os.environ.get(k, None) == v:
+                        return c['constant']
+            elif isinstance(c['env'], list):
+                for k in c['env']:
+                    if k in os.environ:
+                        return c['constant']

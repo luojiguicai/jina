@@ -3,8 +3,9 @@ import os
 import pytest
 
 import jina
+from jina import Document
 from jina.helloworld.fashion.app import hello_world
-from jina.helloworld.fashion.executors import *
+from jina.helloworld.fashion.my_executors import *
 from jina.parsers.helloworld import set_hw_parser
 
 

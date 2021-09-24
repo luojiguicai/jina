@@ -4,9 +4,8 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-
 from cli import _is_latest_version
-from jina import Executor, __default_endpoint__
+from jina import Executor, __default_endpoint__, Document
 from jina.clients.helper import _safe_callback, pprint_routes
 from jina.excepts import BadClientCallback, NotSupportedError, NoAvailablePortError
 from jina.executors.decorators import requests
@@ -15,15 +14,18 @@ from jina.helper import (
     convert_tuple_to_list,
     deprecated_alias,
     is_yaml_filepath,
-    touch_dir,
     random_port,
     find_request_binding,
     dunder_get,
+    get_ci_vendor,
+    batch_iterator,
 )
+from jina.hubble.helper import get_hubble_url
 from jina.jaml.helper import complete_path
-from jina.logging import default_logger
+from jina.logging.predefined import default_logger
 from jina.logging.profile import TimeContext
 from jina.proto import jina_pb2
+from jina.types.arrays.memmap import DocumentArrayMemmap
 from jina.types.ndarray.generic import NdArray
 from jina.types.request import Request
 from tests import random_docs
@@ -73,8 +75,11 @@ def test_time_context():
 
 def test_dunder_get():
     a = SimpleNamespace()
-    a.b = {'c': 1}
+    a.b = {'c': 1, 'd': {'e': 'f', 'g': [0, 1, {'h': 'i'}]}}
     assert dunder_get(a, 'b__c') == 1
+    assert dunder_get(a, 'b__d__e') == 'f'
+    assert dunder_get(a, 'b__d__g__0') == 0
+    assert dunder_get(a, 'b__d__g__2__h') == 'i'
 
 
 def test_check_update():
@@ -90,8 +95,8 @@ def test_wrap_func():
     from jina import Executor
 
     class DummyEncoder(Executor):
-        def __init__(self):
-            pass
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
 
     class MockEnc(DummyEncoder):
         pass
@@ -100,8 +105,8 @@ def test_wrap_func():
         pass
 
     class MockMockMockEnc(MockEnc):
-        def __init__(self):
-            pass
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
 
     def check_override(cls, method):
         is_inherit = any(
@@ -243,7 +248,7 @@ def test_yaml_filepath_validate_good(val):
         '''
     shards: $JINA_SHARDS_INDEXERS
     host: $JINA_REDIS_INDEXER_HOST
-    port_expose: 8000
+    port_jinad: 8000
     polling: all
     timeout_ready: 100000 # larger timeout as in query time will read all the data
     uses_after: merge_and_topk.yml
@@ -254,33 +259,26 @@ def test_yaml_filepath_validate_bad(val):
     assert not is_yaml_filepath(val)
 
 
-def test_touch_dir(tmpdir):
-    touch_dir(tmpdir)
-    assert os.path.exists(tmpdir)
-
-
 @pytest.fixture
 def config():
-    os.environ['JINA_RANDOM_PORTS'] = "True"
+    os.environ['JINA_RANDOM_PORT_MIN'] = '49153'
     yield
-    del os.environ['JINA_RANDOM_PORTS']
+    del os.environ['JINA_RANDOM_PORT_MIN']
 
 
 def test_random_port(config):
-    assert os.environ['JINA_RANDOM_PORTS']
+    assert os.environ['JINA_RANDOM_PORT_MIN']
     port = random_port()
     assert 49153 <= port <= 65535
 
 
 @pytest.fixture
 def config_few_ports():
-    os.environ['JINA_RANDOM_PORTS'] = "True"
     os.environ['JINA_RANDOM_PORT_MIN'] = "49300"
     os.environ['JINA_RANDOM_PORT_MAX'] = "49301"
     yield
     del os.environ['JINA_RANDOM_PORT_MIN']
     del os.environ['JINA_RANDOM_PORT_MAX']
-    del os.environ['JINA_RANDOM_PORTS']
 
 
 def test_random_port_max_failures_for_tests_only(config_few_ports):
@@ -316,3 +314,30 @@ def test_find_request_binding():
     assert r['index'] == 'bar'
     assert r['search'] == 'bar2'
     assert 'foo2' not in r.values()
+
+
+@pytest.mark.skipif(
+    'GITHUB_WORKFLOW' not in os.environ, reason='this test is only validate on CI'
+)
+def test_ci_vendor():
+    assert get_ci_vendor() == 'GITHUB_ACTIONS'
+
+
+def test_get_hubble_url():
+    for j in range(2):
+        assert get_hubble_url().startswith('http')
+
+
+def test_batch_iterator_dam(tmpdir):
+    dam = DocumentArrayMemmap(tmpdir)
+    for i in range(4):
+        dam.append(Document(id=i))
+    bi = batch_iterator(dam, 2)
+    expected_iterator = iter(range(4))
+    for batch in bi:
+        for doc in batch:
+            assert int(doc.id) == next(expected_iterator)
+
+    # expect that expected_iterator is totally consumed
+    with pytest.raises(StopIteration):
+        next(expected_iterator)

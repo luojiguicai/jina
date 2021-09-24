@@ -1,15 +1,15 @@
 """Base argparser module for Pea and Pod runtime"""
 import argparse
-
-from pkg_resources import resource_filename
+import os
 
 from ..helper import add_arg_group, _SHOW_ALL_ARGS
 from ...helper import random_identity
 
 
-def mixin_base_ppr_parser(parser):
+def mixin_base_ppr_parser(parser, with_identity: bool = True):
     """Mixing in arguments required by pea/pod/runtime module into the given parser.
     :param parser: the parser instance to which we add arguments
+    :param with_identity: if to include identity in the parser
     """
 
     gp = add_arg_group(parser, title='Essential')
@@ -23,17 +23,10 @@ This will be used in the following places:
 - how you refer to this object in Python/YAML/CLI
 - visualization
 - log message header
-- automatics docs UI
 - ...
 
-When not given, then the default naming strategy will apply. 
+When not given, then the default naming strategy will apply.
                     ''',
-    )
-
-    gp.add_argument(
-        '--description',
-        type=str,
-        help='The description of this object. It will be used in automatics docs UI.',
     )
 
     gp.add_argument(
@@ -43,12 +36,12 @@ When not given, then the default naming strategy will apply.
         'If not set, then derive from its parent `workspace`.',
     )
 
+    from ... import __resources_path__
+
     gp.add_argument(
         '--log-config',
         type=str,
-        default=resource_filename(
-            'jina', '/'.join(('resources', 'logging.default.yml'))
-        ),
+        default=os.path.join(__resources_path__, 'logging.default.yml'),
         help='The YAML config of the logger used in this object.',
     )
 
@@ -67,12 +60,37 @@ When not given, then the default naming strategy will apply.
     )
 
     # hidden CLI used for internal only
+    if with_identity:
+        gp.add_argument(
+            '--identity',
+            type=str,
+            default=random_identity(),
+            help='A UUID string to represent the logger identity of this object'
+            if _SHOW_ALL_ARGS
+            else argparse.SUPPRESS,
+        )
 
     gp.add_argument(
-        '--identity',
+        '--workspace-id',
         type=str,
         default=random_identity(),
-        help='A UUID string to represent the logger identity of this object'
+        help='the UUID for identifying the workspace. When not given a random id will be assigned.'
+        'Multiple Pea/Pod/Flow will work under the same workspace if they share the same '
+        '`workspace-id`.'
         if _SHOW_ALL_ARGS
         else argparse.SUPPRESS,
+    )
+
+    gp.add_argument(
+        '--static-routing-table',
+        action='store_true',
+        default=False,
+        help='Defines if the routing table should be pre computed by the Flow. In this case it is statically defined for each Pod and not send on every data request.'
+        ' Can not be used in combination with external pods',
+    )
+
+    parser.add_argument(
+        '--routing-table',
+        type=str,
+        help='Routing graph for the gateway' if _SHOW_ALL_ARGS else argparse.SUPPRESS,
     )

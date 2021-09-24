@@ -1,7 +1,7 @@
 import os
 import pytest
 
-from jina.flow import Flow
+from jina import Flow
 from jina.peapods.pods import Pod
 from jina.parsers import set_pod_parser
 
@@ -24,7 +24,7 @@ def test_logging(monkeypatch, flow_log_id):
 
     monkeypatch.setattr(fluentasynchandler.FluentHandler, "emit", mock_emit)
 
-    with Flow(identity='identity_flow').add(name='pod1').add(name='pod2'):
+    with Flow(identity='identity_flow').add(name='executor1').add(name='executor2'):
         pass
 
 

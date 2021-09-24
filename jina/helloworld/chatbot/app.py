@@ -3,16 +3,26 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-from jina import Flow, Document, DocumentArray
+from jina import Flow
 from jina.importer import ImportExtensions
-from jina.logging import default_logger
+from jina.logging.predefined import default_logger
 from jina.logging.profile import ProgressBar
 from jina.parsers.helloworld import set_hw_chatbot_parser
+from jina.types.document.generators import from_csv
 
 if __name__ == '__main__':
-    from executors import MyTransformer, MyIndexer
+    from my_executors import MyTransformer, MyIndexer
 else:
-    from .executors import MyTransformer, MyIndexer
+    from .my_executors import MyTransformer, MyIndexer
+
+
+def _get_flow(args):
+    """Ensure the same flow is used in hello world example and system test."""
+    return (
+        Flow(cors=True)
+        .add(uses=MyTransformer, parallel=args.parallel)
+        .add(uses=MyIndexer, workspace=args.workdir)
+    )
 
 
 def hello_world(args):
@@ -45,18 +55,15 @@ def hello_world(args):
     # now comes the real work
     # load index flow from a YAML file
 
-    f = (
-        Flow()
-        .add(uses=MyTransformer, parallel=args.parallel)
-        .add(uses=MyIndexer, workspace=args.workdir)
-    )
+    f = _get_flow(args)
 
     # index it!
     with f, open(targets['covid-csv']['filename']) as fp:
-        f.index(DocumentArray.from_csv(fp, field_resolver={'question': 'text'}))
+        f.index(from_csv(fp, field_resolver={'question': 'text'}), show_progress=True)
 
         # switch to REST gateway at runtime
-        f.use_rest_gateway(args.port_expose)
+        f.protocol = 'http'
+        f.port_expose = args.port_expose
 
         url_html_path = 'file://' + os.path.abspath(
             os.path.join(
@@ -68,7 +75,7 @@ def hello_world(args):
         except:
             pass  # intentional pass, browser support isn't cross-platform
         finally:
-            default_logger.success(
+            default_logger.info(
                 f'You should see a demo page opened in your browser, '
                 f'if not, you may open {url_html_path} manually'
             )
@@ -93,11 +100,11 @@ def download_data(targets, download_proxy=None, task_name='download fashion-mnis
         )
         opener.add_handler(proxy)
     urllib.request.install_opener(opener)
-    with ProgressBar(task_name=task_name, batch_unit='') as t:
+    with ProgressBar(description=task_name) as t:
         for k, v in targets.items():
             if not os.path.exists(v['filename']):
                 urllib.request.urlretrieve(
-                    v['url'], v['filename'], reporthook=lambda *x: t.update_tick(0.01)
+                    v['url'], v['filename'], reporthook=lambda *x: t.update(0.01)
                 )
 
 

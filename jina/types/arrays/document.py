@@ -1,12 +1,8 @@
-import csv
-import glob
 import itertools
 import json
-import os
-import random
+from abc import abstractmethod
 from collections.abc import MutableSequence, Iterable as Itr
 from contextlib import nullcontext
-
 from typing import (
     Union,
     Iterable,
@@ -16,16 +12,23 @@ from typing import (
     TextIO,
     Optional,
     Generator,
+    BinaryIO,
+    TypeVar,
     Dict,
+    Sequence,
 )
 
 import numpy as np
 
-
+from .abstract import AbstractDocumentArray
+from .neural_ops import DocumentArrayNeuralOpsMixin
+from .search_ops import DocumentArraySearchOpsMixin
 from .traversable import TraversableSequence
-from ...helper import typename, cached_property
-from ...logging import default_logger
-from ...proto.jina_pb2 import DocumentProto
+from ..document import Document
+from ..struct import StructView
+from ...helper import typename
+from ...proto import jina_pb2
+import csv
 
 try:
     # when protobuf using Cpp backend
@@ -38,50 +41,230 @@ except:
         RepeatedCompositeFieldContainer as RepeatedContainer,
     )
 
-__all__ = ['DocumentArray']
+__all__ = ['DocumentArray', 'DocumentArrayGetAttrMixin']
 
-if False:
-    from ..document import Document
-
-# https://github.com/ndjson/ndjson.github.io/issues/1#issuecomment-109935996
-_jsonl_ext = {'.jsonlines', '.ndjson', '.jsonl', '.jl', '.ldjson'}
-_csv_ext = {'.csv', '.tcsv'}
-
-
-def _sample(iterable, sampling_rate: Optional[float] = None):
-    for i in iterable:
-        if sampling_rate is None or random.random() < sampling_rate:
-            yield i
+DocumentArraySourceType = TypeVar(
+    'DocumentArraySourceType',
+    jina_pb2.DocumentArrayProto,
+    Sequence[Document],
+    Sequence[jina_pb2.DocumentProto],
+    Document,
+)
 
 
-def _subsample(
-    iterable, size: Optional[int] = None, sampling_rate: Optional[float] = None
+class DocumentArrayGetAttrMixin:
+    """A mixin that provides attributes getter in bulk """
+
+    @abstractmethod
+    def __iter__(self):
+        ...
+
+    @abstractmethod
+    def __len__(self):
+        """Any implementation needs to implement the `length` method"""
+        ...
+
+    @abstractmethod
+    def __getitem__(self, item: int):
+        """Any implementation needs to implement access via integer item
+
+        :param item: the item index to access
+        """
+        ...
+
+    def get_attributes(self, *fields: str) -> Union[List, List[List]]:
+        """Return all nonempty values of the fields from all docs this array contains
+
+        :param fields: Variable length argument with the name of the fields to extract
+        :return: Returns a list of the values for these fields.
+            When `fields` has multiple values, then it returns a list of list.
+        """
+        contents = [doc.get_attributes(*fields) for doc in self]
+
+        if len(fields) > 1:
+            contents = list(map(list, zip(*contents)))
+
+        return contents
+
+    def get_attributes_with_docs(
+        self,
+        *fields: str,
+    ) -> Tuple[Union[List, List[List]], 'DocumentArray']:
+        """Return all nonempty values of the fields together with their nonempty docs
+
+        :param fields: Variable length argument with the name of the fields to extract
+        :return: Returns a tuple. The first element is  a list of the values for these fields.
+            When `fields` has multiple values, then it returns a list of list. The second element is the non-empty docs.
+        """
+
+        contents = []
+        docs_pts = []
+
+        for doc in self:
+            contents.append(doc.get_attributes(*fields))
+            docs_pts.append(doc)
+
+        if len(fields) > 1:
+            contents = list(map(list, zip(*contents)))
+
+        return contents, DocumentArray(docs_pts)
+
+    @property
+    @abstractmethod
+    def embeddings(self) -> np.ndarray:
+        """Return a `np.ndarray` stacking all the `embedding` attributes as rows."""
+        ...
+
+    @embeddings.setter
+    @abstractmethod
+    def embeddings(self, emb: np.ndarray):
+        """Set the embeddings of the Documents
+        :param emb: the embeddings to set
+        """
+        ...
+
+    @property
+    def blobs(self) -> np.ndarray:
+        """Return a `np.ndarray` stacking all the `blob` attributes.
+
+        The `blob` attributes are stacked together along a newly created first
+        dimension (as if you would stack using ``np.stack(X, axis=0)``).
+
+        .. warning:: This operation assumes all blobs have the same shape and dtype.
+                 All dtype and shape values are assumed to be equal to the values of the
+                 first element in the DocumentArray / DocumentArrayMemmap
+
+        .. warning:: This operation currently does not support sparse arrays.
+        """
+        ...
+
+    @blobs.setter
+    def blobs(self, blobs: np.ndarray):
+        """Set the blobs of the Documents
+
+        :param blobs: The blob array to set. The first axis is the "row" axis.
+        """
+
+        if len(blobs) != len(self):
+            raise ValueError(
+                f'the number of rows in the input ({len(blobs)}), should match the'
+                f'number of Documents ({len(self)})'
+            )
+
+        for d, x in zip(self, blobs):
+            d.blob = x
+
+    @property
+    def tags(self) -> List[StructView]:
+        """Get the tags attribute of all Documents"""
+        ...
+
+    @tags.setter
+    def tags(self, tags: Sequence[Union[Dict, StructView]]):
+        """Set the tags attribute for all Documents
+
+        :param tags: A sequence of tags to set, should be the same length as the
+            number of Documents
+        """
+
+        if len(tags) != len(self):
+            raise ValueError(
+                f'the number of tags in the input ({len(tags)}), should match the'
+                f'number of Documents ({len(self)})'
+            )
+
+        for doc, tags_doc in zip(self, tags):
+            doc.tags = tags_doc
+
+    @property
+    def texts(self) -> List[str]:
+        """Get the text attribute of all Documents"""
+        ...
+
+    @texts.setter
+    def texts(self, texts: Sequence[str]):
+        """Set the text attribute for all Documents
+
+        :param texts: A sequence of texts to set, should be the same length as the
+            number of Documents
+        """
+        if len(texts) != len(self):
+            raise ValueError(
+                f'the number of texts in the input ({len(texts)}), should match the'
+                f'number of Documents ({len(self)})'
+            )
+
+        for doc, text in zip(self, texts):
+            doc.text = text
+
+
+class DocumentArray(
+    TraversableSequence,
+    MutableSequence,
+    DocumentArrayGetAttrMixin,
+    DocumentArrayNeuralOpsMixin,
+    DocumentArraySearchOpsMixin,
+    Itr,
+    AbstractDocumentArray,
 ):
-    yield from itertools.islice(_sample(iterable, sampling_rate), size)
-
-
-class DocumentArray(TraversableSequence, MutableSequence, Itr):
     """
     :class:`DocumentArray` is a mutable sequence of :class:`Document`.
     It gives an efficient view of a list of Document. One can iterate over it like
     a generator but ALSO modify it, count it, get item, or union two 'DocumentArray's using the '+' and '+=' operators.
 
-    :param docs_proto: A list of :class:`Document`
-    :type docs_proto: Optional[Union['RepeatedContainer', Iterable['Document']]]
+    It is supposed to act as a view containing a pointer to a `RepeatedContainer` of `DocumentProto` while offering `Document` Jina native types
+    when getting items or iterating over it
+
+    :param docs: the document array to construct from. One can also give `DocumentArrayProto` directly, then depending on the ``copy``,
+                it builds a view or a copy from it. It also can accept a List
     """
 
-    def __init__(
-        self,
-        docs_proto: Optional[Union['RepeatedContainer', Iterable['Document']]] = None,
-    ):
+    def __init__(self, docs: Optional[DocumentArraySourceType] = None):
         super().__init__()
-        if docs_proto is not None:
-            if isinstance(docs_proto, Generator):
-                self._docs_proto = list(docs_proto)
+        self._pb_body = []
+        if docs is not None:
+            if isinstance(docs, jina_pb2.DocumentArrayProto):
+                # This would happen when loading from file or memmap
+                self._pb_body = docs.docs
+            elif isinstance(docs, RepeatedContainer):
+                # This would happen when `doc.matches` or `doc.chunks`
+                self._pb_body = docs
+            elif isinstance(docs, DocumentArray):
+                # This would happen in the client
+                self._pb_body = docs._pb_body
             else:
-                self._docs_proto = docs_proto
-        else:
-            self._docs_proto = []
+                if isinstance(docs, Document):
+                    # single Document
+                    docs = [docs]
+
+                from .memmap import DocumentArrayMemmap
+
+                if isinstance(
+                    docs, (list, tuple, Generator, DocumentArrayMemmap, itertools.chain)
+                ):
+                    # This would happen in the client
+                    for doc in docs:
+                        if isinstance(doc, Document):
+                            self._pb_body.append(doc.proto)
+                        elif isinstance(doc, jina_pb2.DocumentProto):
+                            self._pb_body.append(doc)
+                        else:
+                            raise ValueError(f'Unexpected element in an input list')
+                else:
+                    raise ValueError(
+                        f'DocumentArray got an unexpected input {type(docs)}'
+                    )
+        self._update_id_to_index_map()
+
+    def _update_id_to_index_map(self):
+        """Update the id_to_index map by enumerating all Documents in self._pb_body.
+
+        Very costy! Only use this function when self._pb_body is dramtically changed.
+        """
+
+        self._id_to_index = {
+            d.id: i for i, d in enumerate(self._pb_body)
+        }  # type: Dict[str, int]
 
     def insert(self, index: int, doc: 'Document') -> None:
         """
@@ -90,21 +273,26 @@ class DocumentArray(TraversableSequence, MutableSequence, Itr):
         :param index: Position of the insertion.
         :param doc: The doc needs to be inserted.
         """
-        self._docs_proto.insert(index, doc.proto)
+        self._pb_body.insert(index, doc.proto)
+        self._id_to_index[doc.id] = index
 
     def __setitem__(self, key, value: 'Document'):
-        if isinstance(key, (int, str)):
+        if isinstance(key, int):
             self[key].CopyFrom(value)
+            self._id_to_index[value.id] = key
+        elif isinstance(key, str):
+            self[self._id_to_index[key]].CopyFrom(value)
         else:
             raise IndexError(f'do not support this index {key}')
 
     def __delitem__(self, index: Union[int, str, slice]):
         if isinstance(index, int):
-            del self._docs_proto[index]
+            del self._pb_body[index]
         elif isinstance(index, str):
-            del self._docs_map[index]
+            del self[self._id_to_index[index]]
+            self._id_to_index.pop(index)
         elif isinstance(index, slice):
-            del self._docs_proto[index]
+            del self._pb_body[index]
         else:
             raise IndexError(
                 f'do not support this index type {typename(index)}: {index}'
@@ -112,31 +300,27 @@ class DocumentArray(TraversableSequence, MutableSequence, Itr):
 
     def __eq__(self, other):
         return (
-            type(self._docs_proto) is type(other._docs_proto)
-            and self._docs_proto == other._docs_proto
+            type(self._pb_body) is type(other._pb_body)
+            and self._pb_body == other._pb_body
         )
 
     def __len__(self):
-        return len(self._docs_proto)
+        return len(self._pb_body)
 
     def __iter__(self) -> Iterator['Document']:
-        from ..document import Document
-
-        for d in self._docs_proto:
+        for d in self._pb_body:
             yield Document(d)
 
     def __contains__(self, item: str):
-        return item in self._docs_map
+        return item in self._id_to_index
 
     def __getitem__(self, item: Union[int, str, slice]):
-        from ..document import Document
-
         if isinstance(item, int):
-            return Document(self._docs_proto[item])
+            return Document(self._pb_body[item])
         elif isinstance(item, str):
-            return Document(self._docs_map[item])
+            return self[self._id_to_index[item]]
         elif isinstance(item, slice):
-            return DocumentArray(self._docs_proto[item])
+            return DocumentArray(self._pb_body[item])
         else:
             raise IndexError(f'do not support this index type {typename(item)}: {item}')
 
@@ -159,7 +343,8 @@ class DocumentArray(TraversableSequence, MutableSequence, Itr):
 
         :param doc: The doc needs to be appended.
         """
-        self._docs_proto.append(doc.proto)
+        self._id_to_index[doc.id] = len(self._pb_body)
+        self._pb_body.append(doc.proto)
 
     def extend(self, iterable: Iterable['Document']) -> None:
         """
@@ -167,88 +352,64 @@ class DocumentArray(TraversableSequence, MutableSequence, Itr):
 
         :param iterable: the iterable of Documents to extend this array with
         """
+        if not iterable:
+            return
+
         for doc in iterable:
             self.append(doc)
 
     def clear(self):
         """Clear the data of :class:`DocumentArray`"""
-        del self._docs_proto[:]
+        del self._pb_body[:]
+        self._id_to_index.clear()
 
     def reverse(self):
         """In-place reverse the sequence."""
-        if isinstance(self._docs_proto, RepeatedContainer):
-            size = len(self._docs_proto)
-            hi_idx = size - 1
-            for i in range(int(size / 2)):
-                tmp = DocumentProto()
-                tmp.CopyFrom(self._docs_proto[hi_idx])
-                self._docs_proto[hi_idx].CopyFrom(self._docs_proto[i])
-                self._docs_proto[i].CopyFrom(tmp)
-                hi_idx -= 1
-        elif isinstance(self._docs_proto, list):
-            self._docs_proto.reverse()
+        size = len(self._pb_body)
+        hi_idx = size - 1
+        for i in range(int(size / 2)):
+            tmp = jina_pb2.DocumentProto()
+            tmp.CopyFrom(self._pb_body[hi_idx])
+            self._pb_body[hi_idx].CopyFrom(self._pb_body[i])
+            self._pb_body[i].CopyFrom(tmp)
+            hi_idx -= 1
+        self._update_id_to_index_map()
 
-    @cached_property
-    def _docs_map(self):
-        """Returns a doc_id to doc mapping so one can later index a Document using doc_id as string key.
-
-        .. # noqa: DAR201"""
-        return {d.id: d for d in self._docs_proto}
-
-    def sort(self, *args, **kwargs):
+    def sort(self, key=None, *args, **kwargs):
         """
         Sort the items of the :class:`DocumentArray` in place.
 
+        :param key: key callable to sort based upon
         :param args: variable set of arguments to pass to the sorting underlying function
         :param kwargs: keyword arguments to pass to the sorting underlying function
         """
-        self._docs_proto.sort(*args, **kwargs)
+        if key:
 
-    def get_attributes(self, *fields: str) -> Union[List, List[List]]:
-        """Return all nonempty values of the fields from all docs this array contains
+            def overriden_key(proto):
+                # Function to override the `proto` and wrap it around a `Document` to enable sorting via
+                # `Document-like` interface
+                d = Document(proto)
+                return key(d)
 
-        :param fields: Variable length argument with the name of the fields to extract
-        :return: Returns a list of the values for these fields.
-            When `fields` has multiple values, then it returns a list of list.
-        """
-        return self.get_attributes_with_docs(*fields)[0]
+            # Logic here: `overriden_key` is offered to allow the user sort via pythonic `Document` syntax. However,
+            # maybe there may be cases where this won't work and the user may enter `proto-like` interface. To make
+            # sure (quite fragile) the `sort` will work seamlessly, it tries to apply `key` to the first element and
+            # see if it works. If it works it can sort with `proto` interface, otherwise use `Document` interface one.
+            # (Very often the 2 interfaces are both the same and valid, so proto will have less overhead
+            overriden = False
+            try:
+                key(self._pb_body[0])
+            except:
+                overriden = True
 
-    def get_attributes_with_docs(
-        self,
-        *fields: str,
-    ) -> Tuple[Union[List, List[List]], 'DocumentArray']:
-        """Return all nonempty values of the fields together with their nonempty docs
+            if not overriden:
+                self._pb_body.sort(key=key, *args, **kwargs)
+            else:
+                self._pb_body.sort(key=overriden_key, *args, **kwargs)
+        else:
+            self._pb_body.sort(*args, **kwargs)
 
-        :param fields: Variable length argument with the name of the fields to extract
-        :return: Returns a tuple. The first element is  a list of the values for these fields.
-            When `fields` has multiple values, then it returns a list of list. The second element is the non-empty docs.
-        """
-
-        contents = []
-        docs_pts = []
-        bad_docs = []
-
-        for doc in self:
-            r = doc.get_attributes(*fields)
-            if r is None:
-                bad_docs.append(doc)
-                continue
-            contents.append(r)
-            docs_pts.append(doc)
-
-        if len(fields) > 1:
-            contents = list(map(list, zip(*contents)))
-
-        if bad_docs:
-            default_logger.warning(
-                f'found {len(bad_docs)} docs at granularity {bad_docs[0].granularity} are missing one of the '
-                f'following fields: {fields} '
-            )
-
-        if not docs_pts:
-            default_logger.warning('no documents are extracted')
-
-        return contents, DocumentArray(docs_pts)
+        self._update_id_to_index_map()
 
     def __bool__(self):
         """To simulate ```l = []; if l: ...```
@@ -258,31 +419,88 @@ class DocumentArray(TraversableSequence, MutableSequence, Itr):
         return len(self) > 0
 
     def __str__(self):
-        from ..document import Document
 
-        if hasattr(self._docs_proto, '__len__'):
-            content = f'{self.__class__.__name__} has {len(self._docs_proto)} items'
+        content = f'{self.__class__.__name__} has {len(self._pb_body)} items'
 
-            if len(self._docs_proto) > 3:
-                content += ' (showing first three)'
-        else:
-            content = 'unknown length array'
+        if len(self._pb_body) > 3:
+            content += ' (showing first three)'
 
         content += ':\n'
-        content += ',\n'.join(str(Document(d)) for d in self._docs_proto[:3])
+        content += ',\n'.join(str(Document(d)) for d in self._pb_body[:3])
 
         return content
 
     def __repr__(self):
         content = ' '.join(
-            f'{k}={v}' for k, v in {'length': len(self._docs_proto)}.items()
+            f'{k}={v}' for k, v in {'length': len(self._pb_body)}.items()
         )
         content += f' at {id(self)}'
         content = content.strip()
         return f'<{typename(self)} {content}>'
 
-    def save(self, file: Union[str, TextIO]) -> None:
+    def save(
+        self, file: Union[str, TextIO, BinaryIO], file_format: str = 'json'
+    ) -> None:
+        """Save array elements into a JSON, a binary file or a CSV file.
+
+        :param file: File or filename to which the data is saved.
+        :param file_format: `json` or `binary` or `csv`. JSON and CSV files are human-readable,
+            but binary format gives much smaller size and faster save/load speed. Note that, CSV file has very limited
+            compatability, complex DocumentArray with nested structure can not be restored from a CSV file.
+        """
+        if file_format == 'json':
+            self.save_json(file)
+        elif file_format == 'binary':
+            self.save_binary(file)
+        elif file_format == 'csv':
+            self.save_csv(file)
+        else:
+            raise ValueError('`format` must be one of [`json`, `binary`, `csv`]')
+
+    @classmethod
+    def load(
+        cls, file: Union[str, TextIO, BinaryIO], file_format: str = 'json'
+    ) -> 'DocumentArray':
+        """Load array elements from a JSON or a binary file, or a CSV file.
+
+        :param file: File or filename to which the data is saved.
+        :param file_format: `json` or `binary` or `csv`. JSON and CSV files are human-readable,
+            but binary format gives much smaller size and faster save/load speed. CSV file has very limited compatability,
+            complex DocumentArray with nested structure can not be restored from a CSV file.
+
+        :return: the loaded DocumentArray object
+        """
+        if file_format == 'json':
+            return cls.load_json(file)
+        elif file_format == 'binary':
+            return cls.load_binary(file)
+        elif file_format == 'csv':
+            return cls.load_csv(file)
+        else:
+            raise ValueError('`format` must be one of [`json`, `binary`, `csv`]')
+
+    def save_binary(self, file: Union[str, BinaryIO]) -> None:
+        """Save array elements into a binary file.
+
+        Comparing to :meth:`save_json`, it is faster and the file is smaller, but not human-readable.
+
+        :param file: File or filename to which the data is saved.
+        """
+        if hasattr(file, 'write'):
+            file_ctx = nullcontext(file)
+        else:
+            file_ctx = open(file, 'wb')
+
+        with file_ctx as fp:
+            dap = jina_pb2.DocumentArrayProto()
+            if self._pb_body:
+                dap.docs.extend(self._pb_body)
+            fp.write(dap.SerializePartialToString())
+
+    def save_json(self, file: Union[str, TextIO]) -> None:
         """Save array elements into a JSON file.
+
+        Comparing to :meth:`save_binary`, it is human-readable but slower to save/load and the file size larger.
 
         :param file: File or filename to which the data is saved.
         """
@@ -296,8 +514,39 @@ class DocumentArray(TraversableSequence, MutableSequence, Itr):
                 json.dump(d.dict(), fp)
                 fp.write('\n')
 
-    @staticmethod
-    def load(file: Union[str, TextIO]) -> 'DocumentArray':
+    def save_csv(self, file: Union[str, TextIO], flatten_tags: bool = True) -> None:
+        """Save array elements into a CSV file.
+
+        :param file: File or filename to which the data is saved.
+        :param flatten_tags: if set, then all fields in ``Document.tags`` will be flattened into ``tag__fieldname`` and
+            stored as separated columns. It is useful when ``tags`` contain a lot of information.
+        """
+        if hasattr(file, 'write'):
+            file_ctx = nullcontext(file)
+        else:
+            file_ctx = open(file, 'w')
+
+        with file_ctx as fp:
+            if flatten_tags:
+                keys = list(self[0].dict().keys()) + list(
+                    f'tag__{k}' for k in self[0].tags
+                )
+                keys.remove('tags')
+            else:
+                keys = list(self[0].dict().keys())
+
+            writer = csv.DictWriter(fp, fieldnames=keys)
+
+            writer.writeheader()
+            for d in self:
+                pd = d.dict(prettify_ndarrays=True)
+                if flatten_tags:
+                    t = pd.pop('tags')
+                    pd.update({f'tag__{k}': v for k, v in t.items()})
+                writer.writerow(pd)
+
+    @classmethod
+    def load_json(cls, file: Union[str, TextIO]) -> 'DocumentArray':
         """Load array elements from a JSON file.
 
         :param file: File or filename to which the data is saved.
@@ -310,196 +559,128 @@ class DocumentArray(TraversableSequence, MutableSequence, Itr):
         else:
             file_ctx = open(file)
 
-        from jina import Document
-
-        da = DocumentArray()
         with file_ctx as fp:
+            da = DocumentArray()
             for v in fp:
                 da.append(Document(v))
-        return da
+            return da
 
-    @staticmethod
-    def from_lines(
-        lines: Optional[Iterable[str]] = None,
-        filepath: Optional[str] = None,
-        read_mode: str = 'r',
-        line_format: str = 'json',
-        field_resolver: Optional[Dict[str, str]] = None,
-        size: Optional[int] = None,
-        sampling_rate: Optional[float] = None,
-    ) -> Generator['Document', None, None]:
-        """Generator function for lines, json and csv. Yields documents or strings.
+    @classmethod
+    def load_binary(cls, file: Union[str, BinaryIO]) -> 'DocumentArray':
+        """Load array elements from a binary file.
 
-        :param lines: a list of strings, each is considered as a document
-        :param filepath: a text file that each line contains a document
-        :param read_mode: specifies the mode in which the file
-                    is opened. 'r' for reading in text mode, 'rb' for reading in binary
-        :param line_format: the format of each line ``json`` or ``csv``
-        :param field_resolver: a map from field names defined in ``document`` (JSON, dict) to the field
-                names defined in Protobuf. This is only used when the given ``document`` is
-                a JSON string or a Python dict.
-        :param size: the maximum number of the documents
-        :param sampling_rate: the sampling rate between [0, 1]
-        :yield: documents
+        :param file: File or filename to which the data is saved.
 
+        :return: a DocumentArray object
         """
-        if filepath:
-            file_type = os.path.splitext(filepath)[1]
-            with open(filepath, read_mode) as f:
-                if file_type in _jsonl_ext:
-                    yield from DocumentArray.from_ndjson(f)
-                elif file_type in _csv_ext:
-                    yield from DocumentArray.from_csv(
-                        f, field_resolver, size, sampling_rate
-                    )
-                else:
-                    yield from _subsample(f, size, sampling_rate)
-        elif lines:
-            if line_format == 'json':
-                yield from DocumentArray.from_ndjson(lines)
-            elif line_format == 'csv':
-                yield from DocumentArray.from_csv(
-                    lines, field_resolver, size, sampling_rate
-                )
-            else:
-                yield from _subsample(lines, size, sampling_rate)
+
+        if hasattr(file, 'read'):
+            file_ctx = nullcontext(file)
         else:
-            raise ValueError('"filepath" and "lines" can not be both empty')
+            file_ctx = open(file, 'rb')
 
-    @staticmethod
-    def from_ndjson(
-        fp: Iterable[str],
-        field_resolver: Optional[Dict[str, str]] = None,
-        size: Optional[int] = None,
-        sampling_rate: Optional[float] = None,
-    ) -> Generator['Document', None, None]:
-        """Generator function for line separated JSON. Yields documents.
+        dap = jina_pb2.DocumentArrayProto()
 
-        :param fp: file paths
-        :param field_resolver: a map from field names defined in ``document`` (JSON, dict) to the field
-                names defined in Protobuf. This is only used when the given ``document`` is
-                a JSON string or a Python dict.
-        :param size: the maximum number of the documents
-        :param sampling_rate: the sampling rate between [0, 1]
-        :yield: documents
+        with file_ctx as fp:
+            dap.ParseFromString(fp.read())
+            da = DocumentArray(dap.docs)
+            return da
 
+    @classmethod
+    def load_csv(cls, file: Union[str, BinaryIO]) -> 'DocumentArray':
+        """Load array elements from a binary file.
+
+        :param file: File or filename to which the data is saved.
+
+        :return: a DocumentArray object
         """
-        from jina import Document
 
-        for line in _subsample(fp, size, sampling_rate):
-            value = json.loads(line)
-            if 'groundtruth' in value and 'document' in value:
-                yield Document(value['document'], field_resolver), Document(
-                    value['groundtruth'], field_resolver
-                )
-            else:
-                yield Document(value, field_resolver)
+        if hasattr(file, 'read'):
+            file_ctx = nullcontext(file)
+        else:
+            file_ctx = open(file, 'r')
 
-    @staticmethod
-    def from_csv(
-        fp: Iterable[str],
-        field_resolver: Optional[Dict[str, str]] = None,
-        size: Optional[int] = None,
-        sampling_rate: Optional[float] = None,
-    ) -> Generator['Document', None, None]:
-        """Generator function for CSV. Yields documents.
+        with file_ctx as fp:
+            da = DocumentArray()
+            for v in csv.DictReader(fp):
+                da.append(Document(v))
+            return da
 
-        :param fp: file paths
-        :param field_resolver: a map from field names defined in ``document`` (JSON, dict) to the field
-                names defined in Protobuf. This is only used when the given ``document`` is
-                a JSON string or a Python dict.
-        :param size: the maximum number of the documents
-        :param sampling_rate: the sampling rate between [0, 1]
-        :yield: documents
+    # Properties for fast access of commonly used attributes
+    @property
+    def embeddings(self) -> np.ndarray:
+        """Return a `np.ndarray` stacking all the `embedding` attributes as rows.
 
+        .. warning:: This operation assumes all embeddings have the same shape and dtype.
+                 All dtype and shape values are assumed to be equal to the values of the
+                 first element in the DocumentArray / DocumentArrayMemmap
+
+        .. warning:: This operation currently does not support sparse arrays.
+
+        :return: embeddings stacked per row as `np.ndarray`.
         """
-        from jina import Document
+        x_mat = b''.join(d.embedding.dense.buffer for d in self._pb_body)
+        proto = self[0].proto.embedding.dense
 
-        lines = csv.DictReader(fp)
-        for value in _subsample(lines, size, sampling_rate):
-            if 'groundtruth' in value and 'document' in value:
-                yield Document(value['document'], field_resolver), Document(
-                    value['groundtruth'], field_resolver
-                )
-            else:
-                yield Document(value, field_resolver)
+        return np.frombuffer(x_mat, dtype=proto.dtype).reshape(
+            (len(self), proto.shape[0])
+        )
 
-    @staticmethod
-    def from_files(
-        patterns: Union[str, List[str]],
-        recursive: bool = True,
-        size: Optional[int] = None,
-        sampling_rate: Optional[float] = None,
-        read_mode: Optional[str] = None,
-    ) -> Generator['Document', None, None]:
-        """Creates an iterator over a list of file path or the content of the files.
+    @embeddings.setter
+    def embeddings(self, emb: np.ndarray):
+        """Set the embeddings of the Documents
 
-        :param patterns: The pattern may contain simple shell-style wildcards, e.g. '\*.py', '[\*.zip, \*.gz]'
-        :param recursive: If recursive is true, the pattern '**' will match any files
-            and zero or more directories and subdirectories
-        :param size: the maximum number of the files
-        :param sampling_rate: the sampling rate between [0, 1]
-        :param read_mode: specifies the mode in which the file is opened.
-            'r' for reading in text mode, 'rb' for reading in binary mode.
-            If `read_mode` is None, will iterate over filenames.
-        :yield: file paths or binary content
-
-        .. note::
-            This function should not be directly used, use :meth:`Flow.index_files`, :meth:`Flow.search_files` instead
+        :param emb: The embedding matrix to set
         """
-        from jina import Document
 
-        if read_mode not in {'r', 'rb', None}:
-            raise RuntimeError(
-                f'read_mode should be "r", "rb" or None, got {read_mode}'
+        if len(emb) != len(self):
+            raise ValueError(
+                f'the number of rows in the input ({len(emb)}), should match the'
+                f'number of Documents ({len(self)})'
             )
 
-        def _iter_file_exts(ps):
-            return itertools.chain.from_iterable(
-                glob.iglob(p, recursive=recursive) for p in ps
-            )
+        for d, x in zip(self, emb):
+            d.embedding = x
 
-        d = 0
-        if isinstance(patterns, str):
-            patterns = [patterns]
-        for g in _iter_file_exts(patterns):
-            if sampling_rate is None or random.random() < sampling_rate:
-                if read_mode is None:
-                    yield Document(uri=g)
-                elif read_mode in {'r', 'rb'}:
-                    with open(g, read_mode) as fp:
-                        yield Document(content=fp.read())
-                d += 1
-            if size is not None and d > size:
-                break
+    @DocumentArrayGetAttrMixin.tags.getter
+    def tags(self) -> List[StructView]:
+        """Get the tags attribute of all Documents
+
+        :return: List of ``tags`` attributes for all Documents
+        """
+        tags = [StructView(d.tags) for d in self._pb_body]
+        return tags
+
+    @DocumentArrayGetAttrMixin.texts.getter
+    def texts(self) -> List[str]:
+        """Get the text attribute of all Documents
+
+        :return: List of ``text`` attributes for all Documents
+        """
+        return [d.text for d in self._pb_body]
+
+    @DocumentArrayGetAttrMixin.blobs.getter
+    def blobs(self) -> np.ndarray:
+        """Return a `np.ndarray` stacking all the `blob` attributes.
+
+        The `blob` attributes are stacked together along a newly created first
+        dimension (as if you would stack using ``np.stack(X, axis=0)``).
+
+        .. warning:: This operation assumes all blobs have the same shape and dtype.
+                 All dtype and shape values are assumed to be equal to the values of the
+                 first element in the DocumentArray / DocumentArrayMemmap
+
+        .. warning:: This operation currently does not support sparse arrays.
+
+        :return: blobs stacked per row as `np.ndarray`.
+        """
+        x_mat = b''.join(d.blob.dense.buffer for d in self._pb_body)
+        proto = self[0].proto.blob.dense
+
+        return np.frombuffer(x_mat, dtype=proto.dtype).reshape(
+            (len(self), *proto.shape)
+        )
 
     @staticmethod
-    def from_ndarray(
-        array: 'np.ndarray',
-        axis: int = 0,
-        size: Optional[int] = None,
-        shuffle: bool = False,
-    ) -> Generator['Document', None, None]:
-        """Create a generator for a given dimension of a numpy array.
-
-        :param array: the numpy ndarray data source
-        :param axis: iterate over that axis
-        :param size: the maximum number of the sub arrays
-        :param shuffle: shuffle the numpy data source beforehand
-        :yield: ndarray
-
-        .. note::
-            This function should not be directly used, use :meth:`Flow.index_ndarray`, :meth:`Flow.search_ndarray` instead
-        """
-
-        from jina import Document
-
-        if shuffle:
-            # shuffle for random query
-            array = np.take(array, np.random.permutation(array.shape[0]), axis=axis)
-        d = 0
-        for r in array:
-            yield Document(content=r)
-            d += 1
-            if size is not None and d >= size:
-                break
+    def _flatten(sequence) -> 'DocumentArray':
+        return DocumentArray(list(itertools.chain.from_iterable(sequence)))

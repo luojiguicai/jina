@@ -12,6 +12,11 @@ def mixin_zmq_runtime_parser(parser):
 
     gp = add_arg_group(parser, title='ZMQRuntime')
     gp.add_argument(
+        '--zmq-identity',
+        type=str,
+        help='The identity of a ZMQRuntime. It is used for unique socket identification towards other ZMQRuntimes.',
+    )
+    gp.add_argument(
         '--port-ctrl',
         type=int,
         default=os.environ.get('JINA_CONTROL_PORT', helper.random_port()),
@@ -26,7 +31,7 @@ def mixin_zmq_runtime_parser(parser):
     gp.add_argument(
         '--timeout-ctrl',
         type=int,
-        default=5000,
+        default=int(os.getenv('JINA_DEFAULT_TIMEOUT_CTRL', '5000')),
         help='The timeout in milliseconds of the control request, -1 for waiting forever',
     )
 

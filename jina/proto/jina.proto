@@ -1,6 +1,7 @@
 syntax = "proto3";
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/struct.proto";
+import "google/protobuf/empty.proto";
 
 package jina;
 
@@ -52,8 +53,8 @@ message SparseNdArrayProto {
     // A 1-D tensor of any type and shape [N], which supplies the values for each element in indices.
     DenseNdArrayProto values = 2;
 
-    // A 1-D int64 tensor of shape [ndims], which specifies the dense_shape of the sparse tensor.
-    repeated int64 dense_shape = 3;
+    // A 1-D int64 tensor of shape [ndims], which specifies the shape of the sparse tensor.
+    repeated uint32 shape = 3;
 }
 
 /**
@@ -67,15 +68,22 @@ message NamedScoreProto {
     string ref_id = 5; // the score is computed between doc `id` and `ref_id`
 }
 
+
+/**
+ * Represents a Graph
+ */
+message GraphProto {
+    SparseNdArrayProto adjacency = 1; // adjacency list
+    google.protobuf.Struct edge_features = 2; // Container structure to store edge features
+    bool undirected = 3; //Flag indicating if the graph is to be interpreted as an undirected graph
+}
+
 /**
  * Represents a Document
  */
 message DocumentProto {
     // A hexdigest that represents a unique document ID
     string id = 1;
-
-    // A hexdigest that represents the hash of the content of the document
-    string content_hash = 24;
 
     // the depth of the recursive chunk structure
     uint32 granularity = 14;
@@ -96,8 +104,8 @@ message DocumentProto {
         // a text document
         string text = 13;
 
-        // a uri of the document could be: a local file path, a remote url starts with http or https or data URI scheme
-        string uri = 9;
+        // Related information to be used when a Document represents a graph with its chunks as nodes
+        GraphProto graph = 27;
     }
 
     // list of the sub-documents of this document (recursive structure)
@@ -106,11 +114,11 @@ message DocumentProto {
     // The weight of this document
     float weight = 5;
 
-    // total number of siblings of this document (docs that are in the same granularity and have the same parent_id)
-    uint32 siblings = 25;
-
     // the matched documents on the same level (recursive structure)
     repeated DocumentProto matches = 8;
+
+    // a uri of the document could be: a local file path, a remote url starts with http or https or data URI scheme
+    string uri = 9;
 
     // mime type of this document, for buffer content, this is required; for other contents, this can be guessed
     string mime_type = 10;
@@ -127,15 +135,14 @@ message DocumentProto {
     // the embedding `ndarray` of this document
     NdArrayProto embedding = 19;
 
-    // TODO: List of matching scores performed on the document, each element corresponds to a metric
-    NamedScoreProto score = 20;
+    // Scores performed on the document, each element corresponds to a metric
+    map<string, NamedScoreProto> scores = 28;
 
     // modality, an identifier to the modality this document belongs to. In the scope of multi/cross modal search
     string modality = 21;
 
-    // List of evaluations performed on the document, each element corresponds to a metric
-    repeated NamedScoreProto evaluations = 23;
-
+    // Evaluations performed on the document, each element corresponds to a metric
+    map<string, NamedScoreProto> evaluations = 29;
 }
 
 /**
@@ -147,6 +154,28 @@ message RouteProto {
     google.protobuf.Timestamp start_time = 3; // receiving time
     google.protobuf.Timestamp end_time = 4; // sending (out) time
     StatusProto status = 5; // the status of the execution
+}
+
+message TargetPodProto{
+    string host = 1; // the host HeadPea of the BasePod
+    uint32 port = 2; // the port HeadPea of the BasePod
+    uint32 port_out = 6; // the port TailPea of the BasePod
+    uint32 expected_parts = 3; // the number of parts the pod should expect
+    repeated RoutingEdgeProto out_edges = 4; // pod_name of Pods, the TailPea should send traffic to
+    string target_identity = 5;
+}
+
+message RoutingEdgeProto {
+    string pod = 1;
+    bool send_as_bind = 2;
+}
+
+message RoutingTableProto {
+    // Pods that get visited during a Flow. Gateway should be both the first and the last entry.
+    map<string, TargetPodProto>  pods = 1;
+
+    // The currently active Pod. Needed for ZMQ.
+    string active_pod = 2;
 }
 
 /**
@@ -197,6 +226,8 @@ message EnvelopeProto {
     CompressConfigProto compression = 9; // compress configuration used for request
 
     repeated RouteProto routes = 10; // status info on every routes
+
+    RoutingTableProto routing_table = 13;  // the routing table contains information to the next pods
 
     StatusProto status = 11; // status info
 
@@ -330,3 +361,13 @@ service JinaRPC {
     rpc Call (stream RequestProto) returns (stream RequestProto) {
     }
 }
+
+/**
+ * jina gRPC service for DataRequests.
+ */
+service JinaDataRequestRPC {
+    // Pass in a Message, wrapping a DataRequest
+    rpc Call (MessageProto) returns (google.protobuf.Empty) {
+    }
+}
+

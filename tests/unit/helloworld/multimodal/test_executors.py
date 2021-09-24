@@ -4,7 +4,13 @@ import pytest
 from PIL import Image
 
 from jina import Document, DocumentArray, Flow
-from jina.helloworld.multimodal.executors import Segmenter, TextEncoder, ImageCrafter
+from jina.helloworld.multimodal.my_executors import (
+    Segmenter,
+    TextEncoder,
+    TextCrafter,
+    ImageCrafter,
+    ImageEncoder,
+)
 
 
 @pytest.fixture(scope='function')
@@ -25,6 +31,18 @@ def encoder_doc_array():
     )
     document.chunks = [chunk_text, chunk_uri]
     return DocumentArray([document])
+
+
+@pytest.fixture(scope='function')
+def encoder_doc_array_for_search(encoder_doc_array, tmpdir):
+    create_test_img(path=str(tmpdir), file_name='1.png')
+    da = DocumentArray()
+    for doc in encoder_doc_array:
+        for chunk in doc.chunks:
+            if chunk.mime_type == 'image/jpeg':
+                chunk.convert_uri_to_datauri()
+        da.append(doc)
+    return da
 
 
 def create_test_img(path, file_name):
@@ -56,6 +74,19 @@ def test_segmenter(segmenter_doc_array, tmpdir):
         f.index(inputs=segmenter_doc_array, on_done=validate)
 
 
+def test_text_crafter(encoder_doc_array, tmpdir):
+    def validate(resp):
+        assert len(resp.data.docs) == 1
+        doc = resp.data.docs[0]
+        assert doc.mime_type == 'text/plain'
+        assert doc.text
+
+    create_test_img(path=str(tmpdir), file_name='1.png')
+    with Flow().add(uses=TextCrafter) as f:
+        f.index(inputs=encoder_doc_array, on_done=validate)
+
+
+@pytest.mark.slow
 def test_text_encoder(encoder_doc_array, tmpdir):
     """In this test, we input one ``DocumentArray`` with one ``Document``,
     and the `encode` method in the ``TextEncoder`` returns chunks.
@@ -66,16 +97,16 @@ def test_text_encoder(encoder_doc_array, tmpdir):
 
     def validate(resp):
         assert len(resp.data.docs) == 1
-        chunk = resp.data.docs[0]
-        assert chunk.mime_type == 'text/plain'
-        assert chunk.embedding
+        doc = resp.data.docs[0]
+        assert doc.mime_type == 'text/plain'
+        assert doc.embedding
 
     create_test_img(path=str(tmpdir), file_name='1.png')
-    with Flow().add(uses=TextEncoder) as f:
+    with Flow().add(uses=TextCrafter).add(uses=TextEncoder) as f:
         f.index(inputs=encoder_doc_array, on_done=validate)
 
 
-def test_image_crafter(encoder_doc_array, tmpdir):
+def test_image_crafter_index(encoder_doc_array, tmpdir):
     """In this test, we input one ``DocumentArray`` with one ``Document``,
     and the `craft` method in the ``ImageCrafter`` returns chunks.
     In the ``ImageCrafter``, we filtered out all the modalities and only kept `image/jpeg`.
@@ -86,11 +117,55 @@ def test_image_crafter(encoder_doc_array, tmpdir):
 
     def validate(resp):
         assert len(resp.data.docs) == 1
-        chunk = resp.data.docs[0]
-        assert chunk.mime_type == 'image/jpeg'
-        assert chunk.blob
-        assert chunk.uri == ''
+        doc = resp.data.docs[0]
+        assert doc.mime_type == 'image/jpeg'
+        assert doc.blob
 
     create_test_img(path=str(tmpdir), file_name='1.png')
     with Flow().add(uses=ImageCrafter) as f:
         f.index(inputs=encoder_doc_array, on_done=validate)
+
+
+def test_image_crafter_search(encoder_doc_array_for_search, tmpdir):
+    def validate(resp):
+        assert len(resp.data.docs) == 1
+        chunk = resp.data.docs[0]
+        assert chunk.mime_type == 'image/jpeg'
+        assert chunk.blob
+        assert chunk.uri.startswith('data')
+
+    with Flow().add(uses=ImageCrafter) as f:
+        f.search(inputs=encoder_doc_array_for_search, on_done=validate)
+
+
+def test_image_encoder_index(encoder_doc_array, tmpdir):
+    """In this test, we input one ``DocumentArray`` with one ``Document``,
+    and the `encode` method in the ``ImageEncoder``.
+    """
+
+    def validate(resp):
+        assert len(resp.data.docs) == 1
+        for doc in resp.data.docs:
+            assert doc.mime_type == 'image/jpeg'
+            assert doc.embedding
+            assert doc.embedding.dense.shape[0] == 1280
+
+    create_test_img(path=str(tmpdir), file_name='1.png')
+    with Flow().add(uses=ImageCrafter).add(uses=ImageEncoder) as f:
+        f.index(inputs=encoder_doc_array, on_done=validate)
+
+
+def test_image_encoder_search(encoder_doc_array_for_search, tmpdir):
+    """In this test, we input one ``DocumentArray`` with one ``Document``,
+    and the `encode` method in the ``ImageEncoder``.
+    """
+
+    def validate(resp):
+        assert len(resp.data.docs) == 1
+        for doc in resp.data.docs:
+            assert doc.mime_type == 'image/jpeg'
+            assert doc.embedding
+            assert doc.embedding.dense.shape[0] == 1280
+
+    with Flow().add(uses=ImageCrafter).add(uses=ImageEncoder) as f:
+        f.search(inputs=encoder_doc_array_for_search, on_done=validate)
