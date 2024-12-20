@@ -8,12 +8,12 @@ Jina is shipped from two package management systems, PyPi and Docker Hub. This a
 - [PyPi package versioning](#pypi-package-versioning)
 - [Docker image versioning](#docker-image-versioning)
 - [Manual Release Entrypoint](#manual-release-entrypoint)
-- [Breaking changes](#breaking-changes)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
 
 ## PyPi package versioning
+
 We follow [PEP-440](https://www.python.org/dev/peps/pep-0440/), and a form of [semantic versioning](https://semver.org/) as explained above.
 
 To install the latest final release:
@@ -29,6 +29,26 @@ pip install jina==x.y.z
 ```
 
 The term "final release" is relative to "developmental release" as described below.  
+
+### Install Jina with Recommended Extensions
+
+`pip install -U jina` only installs the core dependencies of Jina.
+
+The recommended way of installing Jina is `pip install -U jina`
+
+`"standard"` include extra dependencies that enables:
+- Executor Hub + Docker support
+- FastAPI + Websocket support (required when using `Flow(protocol='http')` or `Flow(protocol='websocket')`)
+- the best compression via LZ4 algorithm
+- the best async eventloop management via `uvloop`
+
+Other extension tags such as  `[devel]` can be found in [extra-requirements.txt](extra-requirements.txt). 
+
+##### Do I need "[standard]"?
+
+Depends on how you use and distribute Jina. 
+
+If you are using/distributing Jina as a microservice, you often only need to install the core dependencies via `pip install jina`.
 
 ### Developmental releases versioning
 
@@ -66,7 +86,7 @@ The following example shows how Jina is released from 0.9 to 0.9.2 according to 
 
 ## Docker image versioning
 
-Our univeral Docker image is ready-to-use on linux/amd64, linux/armv7+, linux/arm/v6. The Docker image name always starts with `jinaai/jina` followed by a tag composed of three parts:
+Our universal Docker image is ready-to-use on linux/amd64, linux/armv7+, linux/arm/v6, linux/arm64. The Docker image name always starts with `jinaai/jina` followed by a tag composed of three parts:
 
 ```text
 jinaai/jina:{version}{python_version}{extra}
@@ -78,30 +98,21 @@ jinaai/jina:{version}{python_version}{extra}
     - `x.y.z`: the release of a particular version;
     - `x.y`: the alias to the last `x.y.z` patch release, i.e. `x.y` = `x.y.max(z)`;
 - `{python_version}`: The Python version of the image. Possible values:
-    - ` `, `-py37`: Python 3.7;
-    - `-py38` for Python 3.8;
+    - `-py37`: Python 3.7;
+    - ` `, `-py38` for Python 3.8;
     - `-py39` for Python 3.9;
+    - `-py310` for Python 3.10;
+    - `-py311` for Python 3.11;
 - `{extra}`: the extra dependency installed along with Jina. Possible values:
     - ` `: Jina is installed inside the image via `pip install jina`;
-    - `-devel`: Jina is installed inside the image via `pip install jina[devel]`;
-    - `-daemon`: Jina is installed inside the image via `pip install jina[dameon]` along with `fluentd`; **and the entrypoint is set to `jinad`**.
+    - `-standard`: Jina is installed inside the image via `pip install jina`. It includes all recommended dependencies;  
+    - `-devel`: Jina is installed inside the image via `pip install "jina[devel]"`. It includes `standard` plus some extra dependencies;
 
 Examples:
 
 - `jinaai/jina:0.9.6`: the `0.9.6` release with Python 3.7 and the entrypoint of `jina`.
-- `jinaai/jina:latest-py38-daemon`: the latest release with Python 3.8 base and the entrypoint of Jina daemon.
 - `jinaai/jina:latest`: the latest release with Python 3.7 and the entrypoint of `jina`
 - `jinaai/jina:master`: the master with Python 3.7 and the entrypoint of `jina`
-
-### Do I need `-devel`?
-
-Use `-devel` image, if you want to:
-- have efficiency improvement on AsyncIO and data compression
-- enable prettified error printing
-- build Jina Hub extension
-- expose REST interface beyond gRPC
-- enable log-streaming/aggregating via `fluentd`
-- enable mime-type sniffing
 
 ### Image alias and updates
 
@@ -111,8 +122,8 @@ Use `-devel` image, if you want to:
 | On `x.y.z` release | `jinaai/jina:x.y.z{python_version}{extra}` | `jinaai/jina:latest{python_version}{extra}`, `jinaai/jina:x.y{python_version}{extra}` |
 
 Six images are built, i.e. taking the combination of:
-  - `{python_version} = ["-py37", "-py38"]`
-  - `{extra} = ["", "-devel", "-daemon"]`
+  - `{python_version} = ["-py37", "-py38", "-py39"]`
+  - `{extra} = ["", "-devel", "-standard"]`
 
 
 ### Image size on different tags
@@ -124,23 +135,31 @@ Six images are built, i.e. taking the combination of:
 |![](https://img.shields.io/docker/image-size/jinaai/jina/latest-py39?label=jinaai%2Fjina%3Alatest-py39&logo=docker)|
 |![](https://img.shields.io/docker/image-size/jinaai/jina/latest-devel?label=jinaai%2Fjina%3Alatest-devel&logo=docker)|
 |![](https://img.shields.io/docker/image-size/jinaai/jina/latest-daemon?label=jinaai%2Fjina%3Alatest-daemon&logo=docker)|
+|![](https://img.shields.io/docker/image-size/jinaai/jina/latest-standard?label=jinaai%2Fjina%3Alatest-standard&logo=docker)|
 |![](https://img.shields.io/docker/image-size/jinaai/jina/latest-py38-devel?label=jinaai%2Fjina%3Alatest-py38-devel&logo=docker)|
 |![](https://img.shields.io/docker/image-size/jinaai/jina/latest-py38-daemon?label=jinaai%2Fjina%3Alatest-py38-daemon&logo=docker)|
+|![](https://img.shields.io/docker/image-size/jinaai/jina/latest-py38-standard?label=jinaai%2Fjina%3Alatest-py38-standard&logo=docker)|
 |![](https://img.shields.io/docker/image-size/jinaai/jina/latest-py39-devel?label=jinaai%2Fjina%3Alatest-py39-devel&logo=docker)|
 |![](https://img.shields.io/docker/image-size/jinaai/jina/latest-py39-daemon?label=jinaai%2Fjina%3Alatest-py39-daemon&logo=docker)|
+|![](https://img.shields.io/docker/image-size/jinaai/jina/latest-py39-standard?label=jinaai%2Fjina%3Alatest-py39-standard&logo=docker)|
 |![](https://img.shields.io/docker/image-size/jinaai/jina/master?label=jinaai%2Fjina%3Amaster&logo=docker)|
 |![](https://img.shields.io/docker/image-size/jinaai/jina/master-py38?label=jinaai%2Fjina%3Amaster-py38&logo=docker)|
 |![](https://img.shields.io/docker/image-size/jinaai/jina/master-py39?label=jinaai%2Fjina%3Amaster-py39&logo=docker)|
 |![](https://img.shields.io/docker/image-size/jinaai/jina/master-devel?label=jinaai%2Fjina%3Amaster-devel&logo=docker)|
 |![](https://img.shields.io/docker/image-size/jinaai/jina/master-daemon?label=jinaai%2Fjina%3Amaster-daemon&logo=docker)|
+|![](https://img.shields.io/docker/image-size/jinaai/jina/master-standard?label=jinaai%2Fjina%3Amaster-standard&logo=docker)|
 |![](https://img.shields.io/docker/image-size/jinaai/jina/master-py38-devel?label=jinaai%2Fjina%3Amaster-py38-devel&logo=docker)|
 |![](https://img.shields.io/docker/image-size/jinaai/jina/master-py38-daemon?label=jinaai%2Fjina%3Amaster-py38-daemon&logo=docker)|
+|![](https://img.shields.io/docker/image-size/jinaai/jina/master-py38-standard?label=jinaai%2Fjina%3Amaster-py38-standard&logo=docker)|
 |![](https://img.shields.io/docker/image-size/jinaai/jina/master-py39-devel?label=jinaai%2Fjina%3Amaster-py39-devel&logo=docker)|
 |![](https://img.shields.io/docker/image-size/jinaai/jina/master-py39-daemon?label=jinaai%2Fjina%3Amaster-py39-daemon&logo=docker)|
+|![](https://img.shields.io/docker/image-size/jinaai/jina/master-py39-standard?label=jinaai%2Fjina%3Amaster-py39-standard&logo=docker)|
+
+---
 
 ## Manual Release Entrypoint
 
-Manual release entrypoint is designed for authroized core developers of Jina.
+Manual release entrypoint is designed for authorized core developers of Jina.
 
 ### Trigger weekly release manually
 
@@ -159,54 +178,3 @@ One can release a hotfix immediately without waiting for the weekly release. Her
 ![Rebuild all Docker images](.github/images/manual-docker-build.png)
 
 Note, the manual rebuild on Docker images will *NOT* update `:latest-*` and `:x.y-*` aliases.
-
-## Breaking changes
-
-### Definition of breaking changes
-
-Breaking changes are non-backward compatible changes to the contracts of methods we expose to our users through our public API interfaces.
-
-We define our public API are being the public functions and Classes in the following modules:
--   YAML Syntax interface
--   Python interface
-	-   `jina/flow`  
-	-  `jina/peapods/pods`
-    -   `jina/executors`
-    -   `jina/drivers`
-    -   `jina/types` (doc/doc sets)
-    -   `jina/resources`
-    -   `jina/clients`
-    -   `jina/optimizers`
--   REST API    
--   Command line Interface API
--   Jina Deamon (JinaD) API
--   Jina.proto
--   Jina Hub API
-
-Examples of breaking changes are:
-
-- Changing the name of a field.
-- Deleting a field
-- Changing the shape or type of a response
-- Changing the method used to get a response (Example: GET to POST).
-- Adding new required parameters to a response.
-
-Examples of non-breaking changes are:
-- Deleting/changing the arguments in a public function/class with a deprecation warning.
-- Deleting unused fields from jina.proto
-- Adding fields to jina.proto with unused positions
-- Experimental APIs claimed in the previous release notes
-- Fixing bugs if the implementation is clearly broken, if it contradicts documentation or if a well-known and well-defined intended behavior is not properly implemented.
-- Deleting unused APIs for which we find no documented uses. We use the following tools to perform checks,
-   - https://Github.com
-   - Searchcode.com
-   - https://sourcegraph.com/search
-   - https://github.com/Quansight-Labs/python-api-inspect
-   - https://github.com/data-apis/python-record-api
-- Replacing error behaviors with non-error behaviors. Changes to low-level APIs such as drivers are not considered breaking changes.
-
-### Documenting a breaking change
-
-1.  Breaking changes should be highlighted in the pull request checklist.
-2.  At the start of a month, a GitHub breaking change issue is opened. If a developer's pull request contains breaking changes, it is their reasonability to record it there.  This is the inital source of truth for recent breaking changes.
-3.  The contents of this GitHub issue are then merged into the release notes.

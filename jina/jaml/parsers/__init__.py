@@ -1,9 +1,11 @@
 import warnings
 from typing import List, Optional, Type
 
-from .base import VersionedYAMLParser
-from .. import JAMLCompatible
-from ...excepts import BadFlowYAMLVersion
+from jina.excepts import BadYAMLVersion
+from jina.jaml import JAMLCompatible
+from jina.jaml.parsers.base import VersionedYAMLParser
+from jina.orchestrate.deployments import Deployment
+from jina.serve.runtimes.gateway.gateway import BaseGateway
 
 
 def _get_all_parser(cls: Type['JAMLCompatible']):
@@ -12,34 +14,43 @@ def _get_all_parser(cls: Type['JAMLCompatible']):
     :param cls: target class
     :return: a tuple of two elements; first is a list of all parsers, second is the legacy parser for default fallback
     """
-    from ...executors import BaseExecutor
-    from ...flow import BaseFlow
+    from jina.orchestrate.flow.base import Flow
+    from jina.serve.executors import BaseExecutor
 
-    if issubclass(cls, BaseFlow):
+    if issubclass(cls, Flow):
         return _get_flow_parser()
     elif issubclass(cls, BaseExecutor):
         return _get_exec_parser()
+    elif issubclass(cls, BaseGateway):
+        return _get_gateway_parser()
+    elif issubclass(cls, Deployment):
+        return _get_deployment_parser()
     else:
-        return _get_default_parser()
+        raise NotImplementedError(f'No parser exists for cls {cls.__name__}')
 
 
 def _get_flow_parser():
-    from .flow.legacy import LegacyParser
-    from .flow.v1 import V1Parser
+    from jina.jaml.parsers.flow.v1 import V1Parser
 
-    return [V1Parser, LegacyParser], V1Parser
+    return [V1Parser], V1Parser
 
 
 def _get_exec_parser():
-    from .executor.legacy import LegacyParser
+    from jina.jaml.parsers.executor.legacy import ExecutorLegacyParser
 
-    return [LegacyParser], LegacyParser
+    return [ExecutorLegacyParser], ExecutorLegacyParser
 
 
-def _get_default_parser():
-    from .default.v1 import V1Parser
+def _get_deployment_parser():
+    from jina.jaml.parsers.deployment.legacy import DeploymentLegacyParser
 
-    return [V1Parser], V1Parser
+    return [DeploymentLegacyParser], DeploymentLegacyParser
+
+
+def _get_gateway_parser():
+    from jina.jaml.parsers.gateway.legacy import GatewayLegacyParser
+
+    return [GatewayLegacyParser], GatewayLegacyParser
 
 
 def get_parser(
@@ -69,15 +80,16 @@ def get_parser(
                     UserWarning,
                 )
                 return p()
-        raise BadFlowYAMLVersion(f'{version} is not a valid version number')
+        raise BadYAMLVersion(f'{version} is not a valid version number')
     else:
+        if version is not None:
+            warnings.warn(
+                f'can not find parser for version: {version}, '
+                f'fallback to legacy parser. '
+                f'this usually mean you are using a deprecated YAML format.',
+                DeprecationWarning,
+            )
         # fallback to legacy parser
-        warnings.warn(
-            f'can not find parser for version: {version}, '
-            f'fallback to legacy parser. '
-            f'this usually mean you are using a depreciated YAML format.',
-            DeprecationWarning,
-        )
         return legacy_parser()
 
 

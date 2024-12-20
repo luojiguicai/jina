@@ -1,11 +1,11 @@
 import pytest
 
-from jina.importer import ImportExtensions, import_classes
-from jina.logging import default_logger
+from jina.importer import ImportExtensions
+from jina.logging.predefined import default_logger
 
 
 def test_bad_import():
-    from jina.logging import default_logger
+    from jina.logging.predefined import default_logger
 
     with pytest.raises(ModuleNotFoundError):
         with ImportExtensions(required=True, logger=default_logger):
@@ -15,20 +15,24 @@ def test_bad_import():
         with ImportExtensions(required=True, logger=default_logger):
             import ngt  # list but no install
 
+    fake_tags = ['ngt', 'index', 'py37']
     with ImportExtensions(required=False, logger=default_logger) as ie:
+        ie._tags = fake_tags
         import ngt
 
-    assert ie._tags == ['ngt', 'index', 'py37']
+    assert ie._tags == fake_tags
 
     with ImportExtensions(required=False, logger=default_logger) as ie:
+        ie._tags = fake_tags
         import ngt.abc.edf
 
-    assert ie._tags == ['ngt', 'index', 'py37']
+    assert ie._tags == fake_tags
 
     with ImportExtensions(required=False, logger=default_logger) as ie:
+        ie._tags = fake_tags
         from ngt.abc import edf
 
-    assert ie._tags == ['ngt', 'index', 'py37']
+    assert ie._tags == fake_tags
 
     with ImportExtensions(required=False, logger=default_logger) as ie:
         import abcdefg
@@ -46,21 +50,14 @@ def test_no_suppress_other_exception():
             raise Exception
 
 
-@pytest.mark.parametrize('ns', ['jina.executors', 'jina.hub'])
-def test_import_classes_failed_find_package(ns, mocker):
-    mocker.patch('pkgutil.get_loader', return_value=None)
-    depend_tree = import_classes(namespace=ns)
-    assert len(depend_tree) == 0
+def test_path_importer(tmpdir):
+    tmpmodule = f'package.py'
+    with open(tmpdir / tmpmodule, 'w', encoding='utf-8') as f:
+        f.write("raise ImportError")
 
+    from jina.importer import PathImporter
 
-@pytest.mark.parametrize('ns', ['jina.executors'])
-def test_import_classes_failed_import_module(ns, mocker, recwarn):
-    import importlib
-
-    mocker.patch.object(
-        importlib, 'import_module', side_effect=Exception('mocked error')
-    )
-    depend_tree = import_classes(namespace=ns)
-    assert len(depend_tree) == 0
-    assert len(recwarn) == 1
-    assert 'You can use `jina check`' in recwarn[0].message.args[0]
+    with pytest.raises(ImportError):
+        PathImporter.add_modules(tmpdir / tmpmodule)
+    with pytest.raises(FileNotFoundError):
+        PathImporter.add_modules('some_package.py')

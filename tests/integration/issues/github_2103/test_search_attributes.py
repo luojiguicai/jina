@@ -5,19 +5,16 @@ import time
 import pytest
 from urllib import request
 
-from jina.flow import Flow
-from jina.proto import jina_pb2
-from jina import Document
+from jina import Flow
+from docarray import Document
 from jina import helper
 from jina import Executor, requests
 from tests import validate_callback
 
 cur_dir = os.path.dirname(os.path.abspath(__file__))
 
-_document_fields = sorted(set(list(jina_pb2.DocumentProto().DESCRIPTOR.fields_by_name)))
-
 # check if this can be bypassed
-IGNORED_FIELDS = ['embedding', 'score']
+IGNORED_FIELDS = ['embedding', 'scores', 'graphInfo', 'evaluations']
 
 
 @pytest.fixture
@@ -38,7 +35,7 @@ def test_no_matches_grpc(mocker, docs):
 
 @pytest.fixture
 def query_dict():
-    return {'top_k': 3, 'mode': 'search', 'data': [f'text:query']}
+    return {'top_k': 3, 'mode': 'search', 'data': [{'text': 'query'}]}
 
 
 class MockExecutor(Executor):
@@ -50,20 +47,20 @@ class MockExecutor(Executor):
 
 def test_no_matches_rest(query_dict):
     port = helper.random_port()
-    with Flow(rest_api=True, port_expose=port, including_default_value_fields=True).add(
-        uses=MockExecutor
-    ):
+    with Flow(
+        protocol='http',
+        port=port,
+    ).add(uses=MockExecutor):
         # temporarily adding sleep
         time.sleep(0.5)
         query = json.dumps(query_dict).encode('utf-8')
         req = request.Request(
-            f'http://0.0.0.0:{port}/search',
+            f'http://localhost:{port}/search',
             data=query,
             headers={'content-type': 'application/json'},
         )
         resp = request.urlopen(req).read().decode('utf8')
-        doc = json.loads(resp)['data']['docs'][0]
-        present_keys = sorted(doc.keys())
-        for field in _document_fields:
-            if field not in IGNORED_FIELDS + ['buffer', 'content', 'blob', 'uri']:
-                assert field in present_keys
+        doc = json.loads(resp)['data'][0]
+
+    assert len(Document.from_dict(doc).matches) == 0
+    assert Document.from_dict(doc).tags['tag'] == 'test'

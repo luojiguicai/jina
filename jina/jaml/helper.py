@@ -1,11 +1,13 @@
 import collections
 import json
 import os
-from typing import Union, TextIO, Dict, Tuple, Optional
+import urllib.parse
+import urllib.request
+from typing import Any, Dict, List, Optional, TextIO, Tuple, Union
 
 from yaml import MappingNode
 from yaml.composer import Composer
-from yaml.constructor import FullConstructor, ConstructorError
+from yaml.constructor import ConstructorError, FullConstructor
 from yaml.parser import Parser
 from yaml.reader import Reader
 from yaml.resolver import Resolver
@@ -90,13 +92,29 @@ class JinaLoader(Reader, Scanner, Parser, Composer, JinaConstructor, JinaResolve
     :param stream: the stream to load.
     """
 
-    def __init__(self, stream):
+    def __init__(self, stream, runtime_args=None):
         Reader.__init__(self, stream)
         Scanner.__init__(self)
         Parser.__init__(self)
         Composer.__init__(self)
         JinaConstructor.__init__(self)
         JinaResolver.__init__(self)
+        self.runtime_args = runtime_args
+
+
+def get_jina_loader_with_runtime(runtime_args: Optional[Dict[str, Any]] = None):
+    """Create a JinaLoader init function which already stored the runtime_args in the init function, usefully for
+    `yaml.load(stream,loader=JinaLoader)` which needs a class with a init function with only one parameter
+
+    :param runtime_args: Optional runtime_args to be directly passed without being parsed into a yaml config
+    :return: A function that initialize a JinaLoader with the runtime_args stored within the function
+
+    """
+
+    def _get_loader(stream):
+        return JinaLoader(stream, runtime_args)
+
+    return _get_loader
 
 
 # remove on|On|ON resolver
@@ -108,11 +126,13 @@ def parse_config_source(
     path: Union[str, TextIO, Dict],
     allow_stream: bool = True,
     allow_yaml_file: bool = True,
-    allow_builtin_resource: bool = True,
     allow_raw_yaml_content: bool = True,
     allow_class_type: bool = True,
     allow_dict: bool = True,
     allow_json: bool = True,
+    allow_url: bool = True,
+    allow_py_module_class_type: bool = True,
+    extra_search_paths: Optional[List[str]] = None,
     *args,
     **kwargs,
 ) -> Tuple[TextIO, Optional[str]]:
@@ -123,23 +143,24 @@ def parse_config_source(
     :param path: the multi-kind source of the configs.
     :param allow_stream: flag
     :param allow_yaml_file: flag
-    :param allow_builtin_resource: flag
     :param allow_raw_yaml_content: flag
     :param allow_class_type: flag
+    :param allow_py_module_class_type: flag
     :param allow_dict: flag
     :param allow_json: flag
+    :param allow_url: flag
+    :param extra_search_paths: extra paths to search for
     :param args: unused
     :param kwargs: unused
     :return: a tuple, the first element is the text stream, the second element is the file path associate to it
             if available.
     """
     import io
-    from pkg_resources import resource_filename
 
     if not path:
         raise BadConfigSource
     elif allow_dict and isinstance(path, dict):
-        from . import JAML
+        from jina.jaml import JAML
 
         tmp = JAML.dump(path)
         return io.StringIO(tmp), None
@@ -147,20 +168,12 @@ def parse_config_source(
         # already a readable stream
         return path, None
     elif allow_yaml_file and is_yaml_filepath(path):
-        comp_path = complete_path(path)
-        return open(comp_path, encoding='utf8'), comp_path
-    elif (
-        allow_builtin_resource
-        and path.lstrip().startswith('_')
-        and os.path.exists(
-            resource_filename('jina', '/'.join(('resources', f'executors.{path}.yml')))
-        )
-    ):
-        # NOTE: this returns a binary stream
-        comp_path = resource_filename(
-            'jina', '/'.join(('resources', f'executors.{path}.yml'))
-        )
-        return open(comp_path, encoding='utf8'), comp_path
+        comp_path = complete_path(path, extra_search_paths)
+        return open(comp_path, encoding='utf-8'), comp_path
+    elif allow_url and urllib.parse.urlparse(path).scheme in {'http', 'https'}:
+        req = urllib.request.Request(path, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as fp:
+            return io.StringIO(fp.read().decode('utf-8')), None
     elif allow_raw_yaml_content and path.lstrip().startswith(('!', 'jtype')):
         # possible YAML content
         path = path.replace('|', '\n    with: ')
@@ -168,9 +181,18 @@ def parse_config_source(
     elif allow_class_type and path.isidentifier():
         # possible class name
         return io.StringIO(f'!{path}'), None
+    elif (
+        allow_py_module_class_type
+        and '.' in path
+        and path.split('.')[-1].isidentifier()
+    ):
+        # possible module.class name
+        module_name, cls_name = path.rsplit('.', maxsplit=1)
+        PathImporter.add_modules(module_name)
+        return io.StringIO(f'!{cls_name}'), None
     elif allow_json and isinstance(path, str):
         try:
-            from . import JAML
+            from jina.jaml import JAML
 
             tmp = json.loads(path)
             tmp = JAML.dump(tmp)
@@ -184,27 +206,32 @@ def parse_config_source(
         )
 
 
-def complete_path(path: str, extra_search_paths: Optional[Tuple[str]] = None) -> str:
+def complete_path(
+    path: str,
+    extra_search_paths: Optional[List[str]] = None,
+    raise_nonexist: bool = True,
+) -> str:
     """
     Complete the path of file via searching in abs and relative paths.
 
     :param path: path of file.
     :param extra_search_paths: extra paths to conduct search
+    :param raise_nonexist: raise exception if the file does not exist
     :return: Completed file path.
     """
-    _p = None
-    if os.path.exists(path):
+    _p = _search_file_in_paths(path, extra_search_paths)
+    if _p is None and os.path.exists(path):
         # this checks both abs and relative paths already
         _p = path
-    else:
-        _p = _search_file_in_paths(path, extra_search_paths)
     if _p:
         return os.path.abspath(_p)
-    else:
+    elif raise_nonexist:
         raise FileNotFoundError(f'can not find {path}')
+    else:
+        return path
 
 
-def _search_file_in_paths(path, extra_search_paths: Optional[Tuple[str]] = None):
+def _search_file_in_paths(path, extra_search_paths: Optional[List[str]] = None):
     """
     Search in all dirs of the PATH environment variable and all dirs of files used in the call stack.
 
@@ -233,7 +260,7 @@ def _search_file_in_paths(path, extra_search_paths: Optional[Tuple[str]] = None)
             return _p
 
 
-def load_py_modules(d: Dict, extra_search_paths: Optional[Tuple[str]] = None) -> None:
+def load_py_modules(d: Dict, extra_search_paths: Optional[List[str]] = None) -> None:
     """
     Find 'py_modules' in the dict recursively and then load them.
 
@@ -254,5 +281,5 @@ def load_py_modules(d: Dict, extra_search_paths: Optional[Tuple[str]] = None) ->
 
     _finditem(d)
     if mod:
-        mod = [complete_path(m, extra_search_paths) for m in mod]
+        mod = [complete_path(m, extra_search_paths, raise_nonexist=False) for m in mod]
         PathImporter.add_modules(*mod)
